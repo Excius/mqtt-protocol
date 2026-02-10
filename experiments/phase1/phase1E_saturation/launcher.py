@@ -6,7 +6,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--clients", type=int, required=True)
 args = parser.parse_args()
 
-CAFILE = "/etc/mosquitto/certs/ca.crt"
+CAFILE = "certs/ca.crt"
 
 
 def try_connect(_):

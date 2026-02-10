@@ -16,7 +16,7 @@ parser.add_argument("--interval", type=float, required=True)
 parser.add_argument("--output", required=True)
 args = parser.parse_args()
 
-CAFILE = "/etc/mosquitto/certs/ca.crt"
+CAFILE = "certs/ca.crt"
 
 start = time.time()
 

@@ -6,11 +6,11 @@ warnings.filterwarnings("ignore", category=DeprecationWarning, module="paho.mqtt
 
 BROKER = "localhost"
 PORT = 8883
-CAFILE = "/etc/mosquitto/certs/ca.crt"
+CAFILE = "certs/ca.crt"
 
 
 def measure_handshake():
-    client = mqtt.Client(protocol=mqtt.MQTTv5)
+    client = mqtt.Client(callback_api_version=mqtt.CallbackAPIVersion.VERSION2, protocol=mqtt.MQTTv5)
 
     client.tls_set(ca_certs=CAFILE)
 

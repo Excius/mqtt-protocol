@@ -15,7 +15,7 @@ if __name__ == "__main__":
     jobs = []
 
     for i in range(N):
-        p = mp.Process(target=worker, args=(results, i, "/etc/mosquitto/certs/ca.crt"))
+        p = mp.Process(target=worker, args=(results, i, "certs/ca.crt"))
         jobs.append(p)
         p.start()
 

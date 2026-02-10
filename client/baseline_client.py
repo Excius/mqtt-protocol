@@ -1,8 +1,10 @@
 import time
 import paho.mqtt.client as mqtt
 
-client = mqtt.Client(protocol=mqtt.MQTTv5)
-client.tls_set(ca_certs="/etc/mosquitto/certs/ca.crt")
+client = mqtt.Client(
+    protocol=mqtt.MQTTv5, callback_api_version=mqtt.CallbackAPIVersion.VERSION2
+)
+client.tls_set(ca_certs="certs/ca.crt")
 
 start = time.time()
 client.connect("localhost", 8883)
