@@ -15,7 +15,7 @@ if __name__ == "__main__":
     jobs = []
 
     for i in range(N):
-        p = mp.Process(target=worker, args=(results, i, "certs/ca.crt"))
+        p = mp.Process(target=worker, args=(results, i, "/home/lightshadow/pseudoD/BTP/mqtt-protocol/certs/ca.crt"))
         jobs.append(p)
         p.start()
 

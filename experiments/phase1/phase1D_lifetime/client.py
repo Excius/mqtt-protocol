@@ -7,7 +7,7 @@ def run(duration):
     c = mqtt.Client(
         protocol=mqtt.MQTTv5, callback_api_version=mqtt.CallbackAPIVersion.VERSION2
     )
-    c.tls_set(ca_certs="certs/ca.crt")
+    c.tls_set(ca_certs="/home/lightshadow/pseudoD/BTP/mqtt-protocol/certs/ca.crt")
     c.connect("localhost", 8883)
     time.sleep(duration)
     c.disconnect()

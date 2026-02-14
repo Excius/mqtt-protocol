@@ -3,7 +3,7 @@ import paho.mqtt.client as mqtt
 
 BROKER = "localhost"
 PORT = 8883
-CAFILE = "certs/ca.crt"
+CAFILE = "/home/lightshadow/pseudoD/BTP/mqtt-protocol/certs/ca.crt"
 
 
 def connect_once():

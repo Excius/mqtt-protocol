@@ -6,7 +6,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--clients", type=int, required=True)
 args = parser.parse_args()
 
-CAFILE = "certs/ca.crt"
+CAFILE = "/home/lightshadow/pseudoD/BTP/mqtt-protocol/certs/ca.crt"
 
 
 def try_connect(_):

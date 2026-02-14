@@ -16,7 +16,7 @@ parser.add_argument("--interval", type=float, required=True)
 parser.add_argument("--output", required=True)
 args = parser.parse_args()
 
-CAFILE = "certs/ca.crt"
+CAFILE = "/home/lightshadow/pseudoD/BTP/mqtt-protocol/certs/ca.crt"
 
 start = time.time()
 
