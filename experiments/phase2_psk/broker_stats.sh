@@ -3,11 +3,18 @@
 PID=$(pidof mosquitto)
 
 if [ -z "$PID" ]; then
-  echo "Mosquitto not running"
-  exit 1
+  echo "0,0,0"
+  exit 0
 fi
 
-CPU=$(ps -p "$PID" -o %cpu=)
-MEM=$(ps -p "$PID" -o rss=) # in KB
+# Sample CPU before
+CPU_BEFORE=$(ps -p "$PID" -o %cpu= 2>/dev/null | tr -d ' ')
 
-echo "$CPU,$MEM"
+# Small delay
+sleep 0.1
+
+# Sample CPU after
+CPU_AFTER=$(ps -p "$PID" -o %cpu= 2>/dev/null | tr -d ' ')
+MEM=$(ps -p "$PID" -o rss= 2>/dev/null | tr -d ' ')
+
+echo "$CPU_BEFORE,$CPU_AFTER,$MEM"

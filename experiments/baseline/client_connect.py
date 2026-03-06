@@ -1,25 +1,31 @@
-import warnings
-import time
-import paho.mqtt.client as mqtt
+"""
+Clean baseline TLS handshake measurement (certificate-based).
+Uses ssl module directly for accurate TLS-only measurement.
+"""
+import sys
+from pathlib import Path
 
-warnings.filterwarnings("ignore", category=DeprecationWarning, module="paho.mqtt")
+# Add experiments directory to path for imports
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from common.measurement import TLSHandshakeMeasurer
 
 BROKER = "localhost"
 PORT = 8883
-CAFILE = "certs/ca.crt"
+
+# Resolve paths relative to project root
+PROJECT_ROOT = Path(__file__).parent.parent.parent
+CERTS_DIR = PROJECT_ROOT / "certs"
+
+CAFILE = str(CERTS_DIR / "ca.crt")
+CERTFILE = str(CERTS_DIR / "server.crt")
+KEYFILE = str(CERTS_DIR / "server.key")
 
 
 def measure_handshake():
-    client = mqtt.Client(callback_api_version=mqtt.CallbackAPIVersion.VERSION2, protocol=mqtt.MQTTv5)
-
-    client.tls_set(ca_certs=CAFILE)
-
-    start = time.perf_counter()
-    client.connect(BROKER, PORT, clean_start=mqtt.MQTT_CLEAN_START_FIRST_ONLY)
-    client.disconnect()
-    end = time.perf_counter()
-
-    return (end - start) * 1000  # ms
+    """Measure certificate-based TLS handshake."""
+    measurer = TLSHandshakeMeasurer(BROKER, PORT)
+    return measurer.measure_cert_handshake(CAFILE, CERTFILE, KEYFILE)
 
 
 if __name__ == "__main__":

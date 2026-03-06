@@ -1,19 +1,32 @@
-import time
-import paho.mqtt.client as mqtt
+"""
+Clean baseline TLS handshake measurement (certificate-based) for Phase 1A Sequential.
+Uses ssl module directly for accurate TLS-only measurement.
+"""
+import sys
+import os
+from pathlib import Path
+
+# Add experiments directory to path for imports
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+
+from common.measurement import TLSHandshakeMeasurer
+
+# Resolve paths relative to project root (parent of experiments)
+PROJECT_ROOT = Path(__file__).parent.parent.parent.parent
+CERTS_DIR = PROJECT_ROOT / "certs"
 
 BROKER = "localhost"
 PORT = 8883
-CAFILE = "/home/lightshadow/pseudoD/BTP/mqtt-protocol/certs/ca.crt"
+CERTFILE = str(CERTS_DIR / "server.crt")
+KEYFILE = str(CERTS_DIR / "server.key")
+CAFILE = str(CERTS_DIR / "ca.crt")
 
 
 def connect_once():
-    c = mqtt.Client(protocol=mqtt.MQTTv5, callback_api_version=mqtt.CallbackAPIVersion.VERSION2)
-    c.tls_set(ca_certs=CAFILE)
-    start = time.perf_counter()
-    c.connect(BROKER, PORT)
-    c.disconnect()
-    return (time.perf_counter() - start) * 1000
+    """Measure one certificate-based TLS handshake."""
+    measurer = TLSHandshakeMeasurer(BROKER, PORT)
+    return measurer.measure_cert_handshake(CAFILE, CERTFILE, KEYFILE)
 
 
 if __name__ == "__main__":
-    print(connect_once())
+    print(f"{connect_once():.3f}")

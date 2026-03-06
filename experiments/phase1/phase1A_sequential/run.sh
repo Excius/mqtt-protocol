@@ -1,13 +1,36 @@
 #!/bin/bash
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 OUT="$DIR/results.csv"
-echo "iteration,handshake_ms,cpu_avg,mem_kb" >"$OUT"
+echo "iteration,handshake_ms,cpu_before,cpu_after,mem_kb" > "$OUT"
 
-cd "$DIR/.."
+cd "$DIR/../.."
 
-for i in {1..200}; do
-  HANDSHAKE=$(python -m phase1A_sequential.client)
-  CPU=$(python -c "from common.cpu_sampler import sample_cpu; print(sample_cpu())")
-  MEM=$(python -c "from common.broker_stats import get_broker_stats; print(get_broker_stats()[1])")
-  echo "$i,$HANDSHAKE,$CPU,$MEM" >>"$OUT"
+# Common broker stats function
+get_broker_stats() {
+  PID=$(pidof mosquitto 2>/dev/null)
+  if [ -z "$PID" ]; then
+    echo "0,0,0"
+    return 0
+  fi
+  
+  CPU_BEFORE=$(ps -p "$PID" -o %cpu= 2>/dev/null | tr -d ' ')
+  sleep 0.05
+  CPU_AFTER=$(ps -p "$PID" -o %cpu= 2>/dev/null | tr -d ' ')
+  MEM=$(ps -p "$PID" -o rss= 2>/dev/null | tr -d ' ')
+  
+  echo "$CPU_BEFORE,$CPU_AFTER,$MEM"
+}
+
+for i in {1..50}; do
+  HANDSHAKE=$(python -m phase1.phase1A_sequential.client)
+  STATS=$(get_broker_stats)
+
+  CPU_BEFORE=$(echo "$STATS" | cut -d',' -f1)
+  CPU_AFTER=$(echo "$STATS" | cut -d',' -f2)
+  MEM=$(echo "$STATS" | cut -d',' -f3)
+
+  echo "$i,$HANDSHAKE,$CPU_BEFORE,$CPU_AFTER,$MEM" >> "$OUT"
+  sleep 1
 done
+
+echo "Phase 1A (Sequential) experiment completed"

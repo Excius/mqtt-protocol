@@ -1,14 +1,21 @@
-import time
-import paho.mqtt.client as mqtt
+"""
+Clean TLS handshake measurement worker for concurrent phase.
+"""
+import sys
+from pathlib import Path
+
+# Add experiments directory to path for imports
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+
+from common.measurement import TLSHandshakeMeasurer
 
 
-def worker(results, idx, cafile):
-    c = mqtt.Client(protocol=mqtt.MQTTv5, callback_api_version=mqtt.CallbackAPIVersion.VERSION2)
-    c.tls_set(ca_certs=cafile)
-    start = time.perf_counter()
+def worker(results, idx, cafile, certfile, keyfile):
+    """Worker function for concurrent measurements."""
     try:
-        c.connect("localhost", 8883)
-        c.disconnect()
-        results[idx] = (time.perf_counter() - start) * 1000
-    except:
+        measurer = TLSHandshakeMeasurer("localhost", 8883)
+        results[idx] = measurer.measure_cert_handshake(cafile, certfile, keyfile)
+    except Exception as e:
+        print(f"Worker {idx} error: {e}")
         results[idx] = -1
+
