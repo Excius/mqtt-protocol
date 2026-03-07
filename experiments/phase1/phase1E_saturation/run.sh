@@ -1,28 +1,28 @@
 #!/bin/bash
+
+# Phase 1E: Broker Saturation Test
+# Tests how many concurrent TLS cert connections the broker can handle
+
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$DIR/../../.."
 OUT="$DIR/results.csv"
-START=50
-END=1000
-STEP=50
 
-echo "clients,success,failed" >"$OUT"
+echo "[Phase 1E] Broker Saturation Test"
 
-if [ -f "$DIR/../../../venv/bin/activate" ]; then
-  source "$DIR/../../../venv/bin/activate"
+if [ -f "$PROJECT_ROOT/venv/bin/activate" ]; then
+    source "$PROJECT_ROOT/venv/bin/activate"
 fi
 
-echo "[Phase-1E] Saturation test started"
+echo "clients,success,failed,cpu,mem_kb" > "$OUT"
 
-cd "$DIR"
-for N in $(seq $START $STEP $END); do
-  echo "Testing $N concurrent clients..."
-  RESULT=$(python launcher.py --clients $N)
-
-  SUCCESS=$(echo $RESULT | cut -d',' -f1)
-  FAILED=$(echo $RESULT | cut -d',' -f2)
-
-  echo "$N,$SUCCESS,$FAILED" >>"$OUT"
-  sleep 2
+for N in 50 100 150 200 250 300 400 500; do
+    echo "  Testing $N concurrent clients..."
+    RESULT=$(python "$DIR/launcher.py" --clients $N 2>/dev/null)
+    if [ -n "$RESULT" ]; then
+        echo "$N,$RESULT" >> "$OUT"
+        echo "    Result: $RESULT"
+    fi
+    sleep 2
 done
 
-echo "[Phase-1E] Experiment completed"
+echo "[Phase 1E] Completed. Results: $OUT"

@@ -1,25 +1,22 @@
 """
-Clean baseline TLS handshake measurement (certificate-based) for Phase 1A Sequential.
-Uses ssl module directly for accurate TLS-only measurement.
+Phase 1A: Sequential TLS certificate handshake measurement.
+Measures latency of sequential cert-based handshakes one at a time.
 """
 import sys
-import os
 from pathlib import Path
 
-# Add experiments directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from common.measurement import TLSHandshakeMeasurer
 
-# Resolve paths relative to project root (parent of experiments)
 PROJECT_ROOT = Path(__file__).parent.parent.parent.parent
 CERTS_DIR = PROJECT_ROOT / "certs"
 
 BROKER = "localhost"
 PORT = 8883
+CAFILE = str(CERTS_DIR / "ca.crt")
 CERTFILE = str(CERTS_DIR / "server.crt")
 KEYFILE = str(CERTS_DIR / "server.key")
-CAFILE = str(CERTS_DIR / "ca.crt")
 
 
 def connect_once():
