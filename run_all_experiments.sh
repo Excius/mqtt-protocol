@@ -2,173 +2,96 @@
 
 ###############################################################################
 # Unified Experiment Runner
-# Executes all baseline, Phase 1, and Phase 2 experiments systematically
-# with comprehensive error checking and result verification
+# Runs all MQTT 5.0 security experiments:
+#   Baseline, Phase 1 (A-E), Phase 2 (PSK), Session Resumption,
+#   PSK Optimization, User Property Attack, AUTH Flood Attack
 ###############################################################################
 
 set -e
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPTS_DIR="$PROJECT_ROOT/experiments"
-RESULTS_DIR="$PROJECT_ROOT/results_$(date +%Y%m%d_%H%M%S)"
 
 echo "=========================================="
-echo "MQTT Security Experiments - Full Test Suite"
+echo "MQTT 5.0 Security — Full Experiment Suite"
 echo "=========================================="
 echo "Project: $PROJECT_ROOT"
-echo "Results Dir: $RESULTS_DIR"
 echo ""
-
-# Create results directory
-mkdir -p "$RESULTS_DIR"
 
 # Activate virtual environment
 if [ -f "$PROJECT_ROOT/venv/bin/activate" ]; then
-    echo "Activating virtual environment..."
     source "$PROJECT_ROOT/venv/bin/activate"
 fi
-
-# Check broker status
-echo ""
-echo "Checking broker status..."
-if ! pidof mosquitto > /dev/null; then
-    echo "ERROR: Mosquitto broker is not running!"
-    echo "Please start the broker with: mosquitto -c broker/mosquitto_tls.conf -d"
-    exit 1
-fi
-echo "✓ Broker is running (PID: $(pidof mosquitto))"
-
-# Function to run a test and capture output
-run_test() {
-    local test_name=$1
-    local test_path=$2
-    local test_cmd=$3
-    local working_dir=${4:-.}
-    
-    echo ""
-    echo "=========================================="
-    echo "Running: $test_name"
-    echo "=========================================="
-    
-    # Change to working directory (default is current, which is $SCRIPTS_DIR)
-    cd "$working_dir"
-    
-    if eval "$test_cmd"; then
-        echo "✓ $test_name completed successfully"
-        # Copy results to archive
-        if [ -f "$test_path/results.csv" ]; then
-            cp "$test_path/results.csv" "$RESULTS_DIR/results_$(basename $(dirname $test_path))_$(basename $test_path).csv"
-        fi
-        return 0
-    else
-        echo "✗ $test_name failed!"
-        return 1
-    fi
-}
 
 failed_tests=()
 passed_tests=()
 
-# ============================================================================
-# BASELINE EXPERIMENTS
-# ============================================================================
-echo ""
-echo "########################################"
-echo "BASELINE EXPERIMENTS"
-echo "########################################"
+run_test() {
+    local test_name=$1
+    local test_cmd=$2
 
-if run_test "Baseline TLS Certificate" "baseline" "bash baseline/run_baseline.sh" "$SCRIPTS_DIR"; then
-    passed_tests+=("Baseline")
-else
-    failed_tests+=("Baseline")
-fi
+    echo ""
+    echo "=========================================="
+    echo "Running: $test_name"
+    echo "=========================================="
 
-# ============================================================================
-# PHASE 1 EXPERIMENTS
-# ============================================================================
-echo ""
-echo "########################################"
-echo "PHASE 1 EXPERIMENTS"
-echo "########################################"
+    if eval "$test_cmd"; then
+        echo "  [PASS] $test_name"
+        passed_tests+=("$test_name")
+    else
+        echo "  [FAIL] $test_name"
+        failed_tests+=("$test_name")
+    fi
+}
 
-# Phase 1A: Sequential
-if run_test "Phase 1A: Sequential Connections" "phase1/phase1A_sequential" "bash phase1/phase1A_sequential/run.sh" "$SCRIPTS_DIR"; then
-    passed_tests+=("Phase1A")
-else
-    failed_tests+=("Phase1A")
-fi
+# ── Baseline & Phase 1 (Certificate TLS) ────────────────────────────────
+run_test "Baseline TLS Certificate"     "bash $SCRIPTS_DIR/baseline/run_baseline.sh"
+run_test "Phase 1A: Sequential"         "bash $SCRIPTS_DIR/phase1/phase1A_sequential/run.sh"
+run_test "Phase 1B: Concurrent"         "bash $SCRIPTS_DIR/phase1/phase1B_concurrent/run.sh"
+run_test "Phase 1C: Sustained Load"     "timeout 120 bash $SCRIPTS_DIR/phase1/phase1C_sustained/run.sh || true"
+run_test "Phase 1D: Connection Lifetime" "bash $SCRIPTS_DIR/phase1/phase1D_lifetime/run.sh"
+run_test "Phase 1E: Saturation"         "timeout 120 bash $SCRIPTS_DIR/phase1/phase1E_saturation/run.sh || true"
 
-# Phase 1B: Concurrent
-if run_test "Phase 1B: Concurrent Connections" "phase1/phase1B_concurrent" "bash phase1/phase1B_concurrent/run.sh" "$SCRIPTS_DIR"; then
-    passed_tests+=("Phase1B")
-else
-    failed_tests+=("Phase1B")
-fi
+# ── Phase 2 (TLS-PSK) ───────────────────────────────────────────────────
+run_test "Phase 2: TLS-PSK"             "bash $SCRIPTS_DIR/phase2_psk/run.sh"
 
-# Phase 1C: Sustained Load
-if run_test "Phase 1C: Sustained Load (15s)" "phase1/phase1C_sustained" "timeout 20 bash phase1/phase1C_sustained/run.sh || true" "$SCRIPTS_DIR"; then
-    passed_tests+=("Phase1C")
-else
-    failed_tests+=("Phase1C")
-fi
+# ── Session Resumption ──────────────────────────────────────────────────
+run_test "Session Resumption"           "bash $SCRIPTS_DIR/session_resumption/run.sh"
 
-# Phase 1D: Lifetime
-if run_test "Phase 1D: Connection Lifetime" "phase1/phase1D_lifetime" "bash phase1/phase1D_lifetime/run.sh" "$SCRIPTS_DIR"; then
-    passed_tests+=("Phase1D")
-else
-    failed_tests+=("Phase1D")
-fi
+# ── PSK Optimization ────────────────────────────────────────────────────
+run_test "PSK Optimization"             "bash $SCRIPTS_DIR/psk_optimized/run.sh"
 
-# Phase 1E: Saturation
-if run_test "Phase 1E: Saturation Test" "phase1/phase1E_saturation" "timeout 120 bash phase1/phase1E_saturation/run.sh || true" "$SCRIPTS_DIR"; then
-    passed_tests+=("Phase1E")
-else
-    failed_tests+=("Phase1E")
-fi
+# ── User Property Attack (Broker-Side Proxy) ────────────────────────────
+run_test "User Property Attack"         "bash $SCRIPTS_DIR/user_property_attack/run.sh"
 
-# ============================================================================
-# PHASE 2 EXPERIMENTS
-# ============================================================================
-echo ""
-echo "########################################"
-echo "PHASE 2 EXPERIMENTS (TLS-PSK)"
-echo "########################################"
+# ── AUTH Flood Attack (Broker-Side Proxy) ────────────────────────────────
+run_test "AUTH Flood Attack"            "bash $SCRIPTS_DIR/auth_flood/run.sh"
 
-# Phase 2: PSK
-if run_test "Phase 2: TLS-PSK Certificate" "phase2_psk" "bash phase2_psk/run.sh" "$SCRIPTS_DIR"; then
-    passed_tests+=("Phase2PSK")
-else
-    failed_tests+=("Phase2PSK")
-fi
-
-# ============================================================================
-# SUMMARY
-# ============================================================================
+# ── Summary ──────────────────────────────────────────────────────────────
 echo ""
 echo "=========================================="
 echo "TEST SUMMARY"
 echo "=========================================="
 echo ""
-echo "Passed Tests (${#passed_tests[@]}):"
-for test in "${passed_tests[@]}"; do
-    echo "  ✓ $test"
-done
+echo "Passed (${#passed_tests[@]}):"
+for t in "${passed_tests[@]}"; do echo "  [PASS] $t"; done
 echo ""
-echo "Failed Tests (${#failed_tests[@]}):"
-for test in "${failed_tests[@]}"; do
-    echo "  ✗ $test"
-done
-echo ""
-echo "Results archived to: $RESULTS_DIR"
-echo ""
+if [ ${#failed_tests[@]} -gt 0 ]; then
+    echo "Failed (${#failed_tests[@]}):"
+    for t in "${failed_tests[@]}"; do echo "  [FAIL] $t"; done
+    echo ""
+fi
+
+# Run comprehensive analysis
+echo "=========================================="
+echo "Running comprehensive analysis..."
+echo "=========================================="
+python "$PROJECT_ROOT/analyze_all.py"
 
 if [ ${#failed_tests[@]} -eq 0 ]; then
-    echo "✓ All experiments completed successfully!"
-    echo ""
-    echo "Collected results files:"
-    ls -lh "$RESULTS_DIR"
+    echo "All experiments completed successfully."
     exit 0
 else
-    echo "✗ Some experiments failed. Please review the output above."
+    echo "Some experiments failed. Check output above."
     exit 1
 fi

@@ -1,111 +1,73 @@
-#!/bin/bash
+#!/usr/bin/env bash
+set -euo pipefail
 
-# User Property Injection Attack Test
-# ====================================
-# Runs VULNERABLE and PROTECTED tests on SEPARATE broker instances
-# so results are independently comparable.
+# ==========================================================================
+# User Property Injection — BROKER-SIDE Protection via Security Proxy
+# ==========================================================================
 #
-# Vulnerable: attack_client.py sends 30 attack packets/iter with
-#             50 user properties × 1KB each (NO validation)
-#             → Broker memory grows as retained messages accumulate
+# Phase 1 (Vulnerable):
+#   attack_client.py → Mosquitto:8883 (direct, no proxy, no protection)
+#   All attack packets (50 props × 1KB) reach the broker unfiltered.
 #
-# Protected:  safe_client.py validates before sending, rejects
-#             oversized packets, only sends 5 normal packets/iter
-#             → Broker memory stays flat
+# Phase 2 (Protected — Broker-Side Proxy):
+#   attack_client.py → Proxy:8883 → Mosquitto:1884
+#   Proxy inspects PUBLISH packets and drops oversized user properties.
+#   Same attack code — protection is entirely broker-side.
+#
+# The attacker CANNOT bypass broker-side protection because the proxy
+# sits between the attacker and the broker.
+# ==========================================================================
 
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$DIR/../.."
-OUT_VULNERABLE="$DIR/results_vulnerable.csv"
-OUT_PROTECTED="$DIR/results_protected.csv"
-BROKER_CONF="$PROJECT_ROOT/broker/mosquitto_psk.conf"
+ROOT="$(cd "$DIR/../.." && pwd)"
+PROXY="$ROOT/proxy/proxy_broker.py"
+BROKER_PSK_CONF="$ROOT/broker/mosquitto_psk.conf"
+BROKER_INT_CONF="$ROOT/broker/mosquitto_internal.conf"
+PSK_FILE="$ROOT/certs/psk.txt"
+STATS_FILE="/tmp/mqtt_proxy_stats.json"
+
+OUT_VULN="$DIR/results_vulnerable.csv"
+OUT_PROT="$DIR/results_protected.csv"
 ITERATIONS=20
 
-echo "=========================================="
-echo "User Property Injection Attack Tests"
-echo "=========================================="
+echo "=========================================================="
+echo "User Property Injection — Broker-Side Proxy Protection"
+echo "=========================================================="
 echo ""
 echo "Attack: 30 packets × 50 properties × 1KB = ~1.5MB/iteration"
 echo "Iterations: $ITERATIONS"
-echo "Expected vulnerable memory growth: ~30MB"
+echo "Vulnerable: attack_client → Mosquitto:8883 (direct)"
+echo "Protected:  attack_client → Proxy:8883 → Mosquitto:1884"
 echo ""
 
-# Initialize CSV files
-echo "iteration,packets_sent,packets_rejected,cpu_before,cpu_after,mem_kb" > "$OUT_VULNERABLE"
-echo "iteration,packets_sent,packets_rejected,cpu_before,cpu_after,mem_kb" > "$OUT_PROTECTED"
+# Activate venv
+source "$ROOT/venv/bin/activate" 2>/dev/null || true
 
-# ==========================================
-# TEST 1: VULNERABLE BROKER (No validation)
-# ==========================================
-echo "--- Phase 1: VULNERABLE MQTT (No Validation) ---"
+PROXY_PID=""
+cleanup() {
+    echo ""
+    echo "Cleaning up..."
+    [ -n "$PROXY_PID" ] && kill "$PROXY_PID" 2>/dev/null || true
+    killall mosquitto 2>/dev/null || true
+    sleep 1
+}
+trap cleanup EXIT
+
+# CSV headers
+echo "iteration,packets_sent,packets_rejected,cpu_before,cpu_after,mem_kb" > "$OUT_VULN"
+echo "iteration,packets_forwarded,packets_dropped,cpu_before,cpu_after,mem_kb" > "$OUT_PROT"
+
+# ======================================================================
+# PHASE 1: VULNERABLE — No proxy, direct to Mosquitto
+# ======================================================================
+echo "--- Phase 1: VULNERABLE (Direct to Mosquitto, No Protection) ---"
 echo ""
 
-# Kill any existing mosquitto and start fresh
-killall mosquitto 2>/dev/null
+killall mosquitto 2>/dev/null || true
 sleep 2
 
-echo "Starting fresh broker for VULNERABLE test..."
-mosquitto -c "$BROKER_CONF" -d
-sleep 1
-
-# Verify broker is running
-if ! pidof mosquitto > /dev/null; then
-    echo "ERROR: Failed to start broker"
-    exit 1
-fi
-
-INITIAL_MEM_VULN=$(ps -p "$(pidof mosquitto)" -o rss= 2>/dev/null | tr -d ' ')
-echo "Broker started. Initial memory: ${INITIAL_MEM_VULN} KB"
-echo ""
-
-for i in $(seq 1 $ITERATIONS); do
-    echo -n "  Iteration $i/$ITERATIONS... "
-
-    # Get broker stats before
-    STATS_BEFORE=$("$DIR/broker_stats.sh")
-    CPU_BEFORE=$(echo "$STATS_BEFORE" | cut -d',' -f1)
-
-    # Run attack client (NO validation - all packets sent including attack)
-    PACKETS=$(timeout 30 python "$DIR/attack_client.py" "$i" 2>/dev/null)
-    # attack_client.py prints just the sent count
-    PACKETS=$(echo "$PACKETS" | tail -1 | tr -d '[:space:]')
-    [ -z "$PACKETS" ] && PACKETS=0
-
-    sleep 0.5
-
-    # Get broker stats after
-    STATS_AFTER=$("$DIR/broker_stats.sh")
-    CPU_AFTER=$(echo "$STATS_AFTER" | cut -d',' -f2)
-    MEM_AFTER=$(echo "$STATS_AFTER" | cut -d',' -f3)
-
-    # Vulnerable: 0 rejected (everything sent)
-    REJECTED=0
-
-    echo "$i,$PACKETS,$REJECTED,$CPU_BEFORE,$CPU_AFTER,$MEM_AFTER" >> "$OUT_VULNERABLE"
-    echo "sent=$PACKETS, mem=${MEM_AFTER}KB"
-
-    sleep 0.5
-done
-
-FINAL_MEM_VULN=$(ps -p "$(pidof mosquitto)" -o rss= 2>/dev/null | tr -d ' ')
-echo ""
-echo "Vulnerable test complete."
-echo "  Initial memory: ${INITIAL_MEM_VULN} KB"
-echo "  Final memory:   ${FINAL_MEM_VULN} KB"
-echo "  Memory growth:  $((FINAL_MEM_VULN - INITIAL_MEM_VULN)) KB"
-
-# ==========================================
-# TEST 2: PROTECTED BROKER (With validation)
-# ==========================================
-echo ""
-echo "--- Phase 2: PROTECTED MQTT (With Validation) ---"
-echo ""
-
-# Kill vulnerable broker and restart fresh
-killall mosquitto 2>/dev/null
-sleep 2
-
-echo "Starting fresh broker for PROTECTED test..."
-mosquitto -c "$BROKER_CONF" -d
+echo "Starting Mosquitto on :8883 (PSK, direct)..."
+mosquitto -c "$BROKER_PSK_CONF" -d
 sleep 1
 
 if ! pidof mosquitto > /dev/null; then
@@ -113,64 +75,154 @@ if ! pidof mosquitto > /dev/null; then
     exit 1
 fi
 
-INITIAL_MEM_PROT=$(ps -p "$(pidof mosquitto)" -o rss= 2>/dev/null | tr -d ' ')
-echo "Broker started. Initial memory: ${INITIAL_MEM_PROT} KB"
+INIT_MEM=$(ps -p "$(pidof mosquitto)" -o rss= 2>/dev/null | tr -d ' ')
+echo "Broker started. Initial memory: ${INIT_MEM} KB"
 echo ""
 
 for i in $(seq 1 $ITERATIONS); do
     echo -n "  Iteration $i/$ITERATIONS... "
 
-    STATS_BEFORE=$("$DIR/broker_stats.sh")
-    CPU_BEFORE=$(echo "$STATS_BEFORE" | cut -d',' -f1)
+    # CPU/memory before
+    STATS_B=$("$DIR/broker_stats.sh")
+    CPU_B=$(echo "$STATS_B" | cut -d',' -f1)
 
-    # Run safe client (with validation - attack packets rejected before sending)
-    OUTPUT=$(timeout 30 python "$DIR/safe_client.py" "$i" 2>/dev/null)
-    # safe_client.py prints "sent_count,rejected_count"
-    OUTPUT=$(echo "$OUTPUT" | tail -1 | tr -d '[:space:]')
-    PACKETS=$(echo "$OUTPUT" | cut -d',' -f1)
-    REJECTED=$(echo "$OUTPUT" | cut -d',' -f2)
-    [ -z "$PACKETS" ] && PACKETS=0
-    [ -z "$REJECTED" ] && REJECTED=0
+    # Run attack (attack_client.py outputs packet count on last line)
+    PKTS=$(timeout 30 python "$DIR/attack_client.py" "$i" 2>/dev/null | tail -1 | tr -d '[:space:]')
+    [ -z "$PKTS" ] && PKTS=0
 
     sleep 0.5
 
-    STATS_AFTER=$("$DIR/broker_stats.sh")
-    CPU_AFTER=$(echo "$STATS_AFTER" | cut -d',' -f2)
-    MEM_AFTER=$(echo "$STATS_AFTER" | cut -d',' -f3)
+    STATS_A=$("$DIR/broker_stats.sh")
+    CPU_A=$(echo "$STATS_A" | cut -d',' -f2)
+    MEM=$(echo "$STATS_A" | cut -d',' -f3)
 
-    echo "$i,$PACKETS,$REJECTED,$CPU_BEFORE,$CPU_AFTER,$MEM_AFTER" >> "$OUT_PROTECTED"
-    echo "sent=$PACKETS, rejected=$REJECTED, mem=${MEM_AFTER}KB"
-
+    echo "$i,$PKTS,0,$CPU_B,$CPU_A,$MEM" >> "$OUT_VULN"
+    echo "sent=$PKTS, mem=${MEM}KB"
     sleep 0.5
 done
 
-FINAL_MEM_PROT=$(ps -p "$(pidof mosquitto)" -o rss= 2>/dev/null | tr -d ' ')
+FINAL_MEM_V=$(ps -p "$(pidof mosquitto)" -o rss= 2>/dev/null | tr -d ' ')
 echo ""
-echo "Protected test complete."
-echo "  Initial memory: ${INITIAL_MEM_PROT} KB"
-echo "  Final memory:   ${FINAL_MEM_PROT} KB"
-echo "  Memory growth:  $((FINAL_MEM_PROT - INITIAL_MEM_PROT)) KB"
+echo "Vulnerable phase complete."
+echo "  Memory: ${INIT_MEM}KB → ${FINAL_MEM_V}KB (+$((FINAL_MEM_V - INIT_MEM))KB)"
 
-# ==========================================
+# ======================================================================
+# PHASE 2: PROTECTED — Proxy in front of Mosquitto
+# ======================================================================
+echo ""
+echo "--- Phase 2: PROTECTED (Proxy → Mosquitto, Broker-Side) ---"
+echo ""
+
+# Stop old broker
+killall mosquitto 2>/dev/null || true
+sleep 2
+
+# Start internal Mosquitto on 1884 (no TLS — behind proxy)
+echo "Starting internal Mosquitto on :1884 (plain TCP, localhost)..."
+mosquitto -c "$BROKER_INT_CONF" -d
+sleep 1
+
+if ! pidof mosquitto > /dev/null; then
+    echo "ERROR: Failed to start internal broker"
+    exit 1
+fi
+
+# Start security proxy on 8883
+echo "Starting security proxy on :8883 (mode=user_property)..."
+python "$PROXY" \
+    --mode user_property \
+    --listen-port 8883 \
+    --backend-port 1884 \
+    --psk-file "$PSK_FILE" \
+    --stats-file "$STATS_FILE" \
+    --conn-timeout 30 &
+PROXY_PID=$!
+sleep 2
+
+# Verify proxy is running
+if ! kill -0 "$PROXY_PID" 2>/dev/null; then
+    echo "ERROR: Proxy failed to start"
+    exit 1
+fi
+echo "Proxy started (PID: $PROXY_PID)"
+
+INIT_MEM_P=$(ps -p "$(pidof mosquitto)" -o rss= 2>/dev/null | tr -d ' ')
+echo "Internal broker memory: ${INIT_MEM_P} KB"
+echo ""
+
+for i in $(seq 1 $ITERATIONS); do
+    echo -n "  Iteration $i/$ITERATIONS... "
+
+    # Reset proxy stats for this iteration
+    kill -USR1 "$PROXY_PID" 2>/dev/null || true
+    sleep 0.2
+
+    # CPU/memory before
+    CPU_B=$(ps -p "$(pidof mosquitto)" -o %cpu= 2>/dev/null | tr -d ' ')
+    [ -z "$CPU_B" ] && CPU_B="0.0"
+
+    # Run the SAME attack client against proxy:8883
+    timeout 30 python "$DIR/attack_client.py" "$i" 2>/dev/null > /dev/null || true
+
+    sleep 1
+
+    # Dump proxy stats
+    kill -USR1 "$PROXY_PID" 2>/dev/null || true
+    sleep 0.3
+
+    # Read proxy stats
+    FORWARDED=0
+    DROPPED=0
+    if [ -f "$STATS_FILE" ]; then
+        FORWARDED=$(python3 -c "import json; d=json.load(open('$STATS_FILE')); print(d.get('packets_forwarded',0))" 2>/dev/null || echo 0)
+        DROPPED=$(python3 -c "import json; d=json.load(open('$STATS_FILE')); print(d.get('packets_dropped',0))" 2>/dev/null || echo 0)
+    fi
+    [ -z "$FORWARDED" ] && FORWARDED=0
+    [ -z "$DROPPED" ] && DROPPED=0
+
+    # CPU/memory after
+    CPU_A=$(ps -p "$(pidof mosquitto)" -o %cpu= 2>/dev/null | tr -d ' ')
+    MEM=$(ps -p "$(pidof mosquitto)" -o rss= 2>/dev/null | tr -d ' ')
+    [ -z "$CPU_A" ] && CPU_A="0.0"
+    [ -z "$MEM" ] && MEM=0
+
+    echo "$i,$FORWARDED,$DROPPED,$CPU_B,$CPU_A,$MEM" >> "$OUT_PROT"
+    echo "forwarded=$FORWARDED, dropped=$DROPPED, mem=${MEM}KB"
+    sleep 0.5
+done
+
+FINAL_MEM_P=$(ps -p "$(pidof mosquitto)" -o rss= 2>/dev/null | tr -d ' ')
+
+# Stop proxy
+kill "$PROXY_PID" 2>/dev/null || true
+wait "$PROXY_PID" 2>/dev/null || true
+PROXY_PID=""
+
+echo ""
+echo "Protected phase complete."
+echo "  Memory: ${INIT_MEM_P}KB → ${FINAL_MEM_P}KB (+$((FINAL_MEM_P - INIT_MEM_P))KB)"
+
+# ======================================================================
 # SUMMARY
-# ==========================================
+# ======================================================================
 echo ""
-echo "=========================================="
-echo "Test Complete - Results Summary"
-echo "=========================================="
+echo "=========================================================="
+echo "Results Summary — Broker-Side User Property Protection"
+echo "=========================================================="
 echo ""
-echo "  VULNERABLE: memory grew from ${INITIAL_MEM_VULN}KB to ${FINAL_MEM_VULN}KB (+$((FINAL_MEM_VULN - INITIAL_MEM_VULN))KB)"
-echo "  PROTECTED:  memory grew from ${INITIAL_MEM_PROT}KB to ${FINAL_MEM_PROT}KB (+$((FINAL_MEM_PROT - INITIAL_MEM_PROT))KB)"
+echo "  VULNERABLE (no proxy):"
+echo "    Memory: ${INIT_MEM}KB → ${FINAL_MEM_V}KB  (+$((FINAL_MEM_V - INIT_MEM))KB)"
 echo ""
-echo "  Results:"
-echo "    Vulnerable: $OUT_VULNERABLE"
-echo "    Protected:  $OUT_PROTECTED"
+echo "  PROTECTED (proxy):"
+echo "    Memory: ${INIT_MEM_P}KB → ${FINAL_MEM_P}KB  (+$((FINAL_MEM_P - INIT_MEM_P))KB)"
 echo ""
-echo "  Analysis: cd $(basename $DIR) && python analyze.py"
+echo "  CSV files:"
+echo "    Vulnerable: $OUT_VULN"
+echo "    Protected:  $OUT_PROT"
 echo ""
 
 # Restart broker for normal use
-killall mosquitto 2>/dev/null
+killall mosquitto 2>/dev/null || true
 sleep 1
-mosquitto -c "$BROKER_CONF" -d
+mosquitto -c "$BROKER_PSK_CONF" -d 2>/dev/null || true
 echo "Broker restarted for normal use."

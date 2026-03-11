@@ -119,11 +119,13 @@ class FloodStats:
     def __init__(self):
         self._lock = threading.Lock()
         self.total_conns = 0
+        self.total_attempts = 0
         self.total_auths = 0
 
-    def add(self, conns, auths):
+    def add(self, conns, attempts, auths):
         with self._lock:
             self.total_conns += conns
+            self.total_attempts += attempts
             self.total_auths += auths
 
 
@@ -137,12 +139,14 @@ def flood_worker(worker_id, stop_event, stats):
     Each cycle forces the broker to do expensive TLS + MQTT processing.
     """
     local_conns = 0
+    local_attempts = 0
     local_auths = 0
     ctx = create_psk_context()
     connect_pkt = build_mqtt5_connect(f"flood-{worker_id}")
     auth_pkt = build_mqtt5_auth()
 
     while not stop_event.is_set():
+        local_attempts += 1
         try:
             # 1. TCP + TLS handshake
             raw = socket.create_connection((BROKER, PORT), timeout=3)
@@ -180,7 +184,7 @@ def flood_worker(worker_id, stop_event, stats):
                 socket.timeout, ssl.SSLError, OSError):
             time.sleep(0.005)          # tiny back-off on failure
 
-    stats.add(local_conns, local_auths)
+    stats.add(local_conns, local_attempts, local_auths)
 
 
 # ── Legitimate client measurement ────────────────────────────────────────
@@ -227,8 +231,8 @@ def main():
     for t in threads:
         t.join(timeout=5)
 
-    # Output: flood_conns, auth_packets_sent, legit_latency_ms, legit_success
-    print(f"{stats.total_conns},{stats.total_auths},"
+    # Output: flood_conns, flood_attempts, auth_packets_sent, legit_latency_ms, legit_success
+    print(f"{stats.total_conns},{stats.total_attempts},{stats.total_auths},"
           f"{legit_latency:.3f},{legit_success}")
 
 

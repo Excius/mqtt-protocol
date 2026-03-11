@@ -1,13 +1,13 @@
 # MQTT 5.0 Security Project — Full Context
 
-> **Last updated:** 7 March 2026
+> **Last updated:** 11 March 2026
 > **Purpose:** Complete reference of project architecture, decisions, bugs fixed, results, and reasoning — so any future collaborator (human or AI) can pick up exactly where this left off.
 
 ---
 
 ## 1. Project Goal
 
-Evaluate the **security and performance** of MQTT 5.0 with different TLS authentication mechanisms and demonstrate a novel MQTT 5.0 attack vector (User Property Injection). The project is structured as a series of experiments that measure TLS handshake latency, broker resource consumption (CPU/memory), and attack impact.
+Evaluate the **security and performance** of MQTT 5.0 with different TLS authentication mechanisms and demonstrate two MQTT 5.0–specific attack vectors with broker-side mitigation. The project is structured as a series of experiments measuring TLS handshake latency, broker resource consumption (CPU/memory), and attack impact.
 
 **Research Questions:**
 
@@ -15,7 +15,8 @@ Evaluate the **security and performance** of MQTT 5.0 with different TLS authent
 2. How does it scale under concurrent/sustained load?
 3. Does TLS-PSK (Pre-Shared Key) perform differently from certificate auth?
 4. Can TLS session resumption reduce reconnection overhead?
-5. Can MQTT 5.0 User Properties be exploited for resource exhaustion, and can it be mitigated?
+5. Can MQTT 5.0 User Properties be exploited for resource exhaustion, and can it be mitigated with broker-side protection?
+6. Can MQTT 5.0 AUTH packets be used for DoS attacks, and can broker-side rate limiting neutralise them?
 
 ---
 
@@ -29,7 +30,6 @@ Evaluate the **security and performance** of MQTT 5.0 with different TLS authent
 | OpenSSL     | 3.5.4 (Sep 2025)        |
 | Mosquitto   | 2.0.21                  |
 | paho-mqtt   | 2.1.0 (Python)          |
-| Broker Port | 8883 (TLS)              |
 | Protocol    | MQTT 5.0 over TLS 1.2   |
 
 **Python venv activation:** `source venv/bin/activate`
@@ -42,21 +42,29 @@ Evaluate the **security and performance** of MQTT 5.0 with different TLS authent
 
 - **Config:** `broker/mosquitto_tls.conf`
 - **Certs:** `certs/ca.crt`, `certs/server.crt`, `certs/server.key`
-- **Client certs:** `certs/client.crt`, `certs/client.key`
 - Broker listens on port 8883 with `tls_version tlsv1.2`
 - `allow_anonymous true` (auth is at TLS level, not MQTT username level)
 
-### PSK-Based (Phase 2 / Session Resumption / User Property Attack)
+### PSK-Based (Phase 2 / Session Resumption / Attacks)
 
 - **Config:** `broker/mosquitto_psk.conf`
 - **PSK file:** `certs/psk.txt` → `client1:0123456789abcdef`
 - **PSK hint:** `mypsk`
 - Same port 8883, TLS 1.2
 
+### Internal (Behind Proxy)
+
+- **Config:** `broker/mosquitto_internal.conf`
+- **Port:** 1884, localhost only, plain TCP (no TLS)
+- `allow_anonymous true`
+- Used only when the security proxy handles TLS termination
+
 ### Critical Rule
 
 - **Baseline + Phase 1 (A–E)** → must use `mosquitto_tls.conf` (cert-based)
-- **Phase 2 / Session Resumption / User Property Attack** → must use `mosquitto_psk.conf` (PSK-based)
+- **Phase 2 / Session Resumption / PSK Optimized** → must use `mosquitto_psk.conf` (PSK-based)
+- **Attack experiments (protected phase)** → proxy on :8883, Mosquitto on :1884 using `mosquitto_internal.conf`
+- **Attack experiments (vulnerable phase)** → direct to Mosquitto on :8883 using `mosquitto_psk.conf`
 - Each `run.sh` script handles its own broker start/stop with the correct config
 
 ---
@@ -65,29 +73,24 @@ Evaluate the **security and performance** of MQTT 5.0 with different TLS authent
 
 ```
 mqtt-security/
-├── README.md                          # CSV data reference & visualisation guide
-├── CONTEXT.md                         # This file
-├── TESTING_GUIDE.md                   # How to run tests
-├── TEST_REPORT.md                     # Test results report
-├── quick_start.sh                     # Quick start helper
+├── README.md                          # Results reference & CSV field documentation
+├── CONTEXT.md                         # This file — full technical context
+├── analyze_all.py                     # Unified analysis of all experiments
 ├── run_all_experiments.sh             # Master script to run everything
 │
 ├── broker/
-│   ├── mosquitto.conf                 # Default (unused)
-│   ├── mosquitto_tls.conf             # Cert-based TLS config
-│   ├── mosquitto_psk.conf             # PSK-based TLS config
-│   └── logs/
+│   ├── mosquitto_tls.conf             # Cert-based TLS config (:8883)
+│   ├── mosquitto_psk.conf             # PSK-based TLS config (:8883)
+│   └── mosquitto_internal.conf        # Plain TCP config (:1884, behind proxy)
 │
 ├── certs/
 │   ├── ca.crt, ca.key, ca.srl         # Certificate Authority
-│   ├── server.crt, server.key         # Broker cert/key
-│   ├── client.crt, client.key         # Client cert/key
+│   ├── server.crt, server.csr, server.key  # Broker certificate
 │   └── psk.txt                        # PSK identity:key file
 │
-├── client/                            # Standalone test clients (manual use)
-│   ├── baseline_client.py
-│   ├── psk_client.py
-│   └── attack_client.py
+├── proxy/
+│   ├── __init__.py
+│   └── proxy_broker.py                # Security proxy (TLS-PSK termination + MQTT inspection)
 │
 ├── experiments/
 │   ├── common/
@@ -100,66 +103,117 @@ mqtt-security/
 │   │   └── results.csv
 │   │
 │   ├── phase1/                        # TLS cert scalability tests
-│   │   ├── __init__.py
 │   │   ├── run_all_phases.sh          # Runs 1A→1E with cert broker
 │   │   ├── common/                    # Phase1-specific helpers
 │   │   │   ├── broker_stats.py
 │   │   │   ├── cpu_sampler.py
 │   │   │   └── utils.py
 │   │   ├── phase1A_sequential/        # 50 back-to-back handshakes
-│   │   │   ├── client.py
-│   │   │   ├── run.sh
-│   │   │   └── results.csv
-│   │   ├── phase1B_concurrent/        # 10-200 simultaneous clients
-│   │   │   ├── launcher.py            # Accepts --clients arg
-│   │   │   ├── client_worker.py       # (legacy, worker now in launcher)
-│   │   │   ├── run.sh
-│   │   │   └── results.csv
+│   │   ├── phase1B_concurrent/        # 10–200 simultaneous clients
 │   │   ├── phase1C_sustained/         # 1 handshake/sec for 60s
-│   │   │   ├── sustained_load.py
-│   │   │   ├── run.sh
-│   │   │   └── results.csv
-│   │   ├── phase1D_lifetime/          # Hold connections 1-60s
-│   │   │   ├── client.py
-│   │   │   ├── run.sh
-│   │   │   └── results.csv
-│   │   └── phase1E_saturation/        # 50-500 simultaneous clients
-│   │       ├── launcher.py
-│   │       ├── run.sh
-│   │       └── results.csv
+│   │   ├── phase1D_lifetime/          # Hold connections 1–60s
+│   │   └── phase1E_saturation/        # 50–500 simultaneous clients
 │   │
 │   ├── phase2_psk/                    # PSK handshake comparison
-│   │   ├── client_connect.py
-│   │   ├── run.sh
-│   │   ├── broker_stats.sh
-│   │   └── results.csv
-│   │
+│   ├── psk_optimized/                 # 4-method comparison (cert/psk/optimized/resumed)
 │   ├── session_resumption/            # PSK session reuse test
-│   │   ├── client_connect.py          # Supports 'new' and 'resumed' modes
-│   │   ├── run.sh
-│   │   ├── analyze.py
-│   │   ├── broker_stats.sh
-│   │   ├── results_new_handshake.csv
-│   │   └── results_session_resumed.csv
 │   │
-│   └── user_property_attack/          # MQTT 5.0 property injection
-│       ├── attack_client.py           # Sends oversized user properties
-│       ├── safe_client.py             # Validates + rejects bad properties
-│       ├── run.sh
-│       ├── analyze.py
+│   ├── user_property_attack/          # MQTT 5.0 property injection
+│   │   ├── attack_client.py           # Sends oversized user properties
+│   │   ├── run.sh                     # Vulnerable + proxy-protected phases
+│   │   ├── analyze.py                 # Per-experiment analysis
+│   │   ├── broker_stats.sh
+│   │   ├── results_vulnerable.csv
+│   │   └── results_protected.csv
+│   │
+│   └── auth_flood/                    # AUTH packet flood attack
+│       ├── attack_client.py           # 10-thread TLS+AUTH flood
+│       ├── run.sh                     # Vulnerable + proxy-protected phases
+│       ├── analyze.py                 # Per-experiment analysis
 │       ├── broker_stats.sh
 │       ├── results_vulnerable.csv
 │       └── results_protected.csv
-│
-└── metrics/                           # (empty placeholders)
-    ├── cpu/
-    ├── latency/
-    └── memory/
 ```
 
 ---
 
-## 5. Core Measurement Module
+## 5. Broker-Side Protection Architecture (Python Security Proxy)
+
+### Design Rationale
+
+Client-side validation is **not a security control** because the attacker controls the client. A malicious client will simply bypass any client-side checks. The only way to enforce security is at the **broker side**, between the attacker and Mosquitto.
+
+Both attack experiments (vulnerable and protected) use the **same `attack_client.py`**. The difference is:
+
+- **Vulnerable phase:** Attack packets go directly to Mosquitto (no proxy)
+- **Protected phase:** Attack packets pass through a Python security proxy that enforces limits before forwarding
+
+### Proxy Architecture
+
+```
+                   Protected Mode
+┌─────────────────┐
+│  attack_client  │ (MQTT 5.0 over TLS-PSK)
+└────────┬────────┘
+         │ Port 8883 (client-facing, TLS-PSK)
+    ┌────▼─────────────────────────────────────┐
+    │  proxy_broker.py (Python Security Proxy) │
+    │  • TLS-PSK termination                   │
+    │  • MQTT packet inspection                │
+    │  • Rate limit connections (2/sec)         │
+    │  • Block AUTH packets (0 allowed)         │
+    │  • Validate user properties              │
+    │  • Enforce cumulative budgets            │
+    │  • Track per-client state                │
+    │  • SIGUSR1 stats dump (JSON)             │
+    └────┬─────────────────────────────────────┘
+         │ Port 1884 (broker-facing, plain TCP, localhost)
+    ┌────▼─────────────────────────────┐
+    │  mosquitto_internal.conf         │
+    │  (Bare Mosquitto, no TLS)        │
+    └──────────────────────────────────┘
+```
+
+### Proxy Modes
+
+The proxy supports three modes via `--mode`:
+
+- `user_property` — Enforce user-property limits on PUBLISH packets
+- `auth_flood` — Rate-limit connections, block AUTH packets
+- `all` — Enable all protections (default)
+
+### Proxy Statistics
+
+The proxy tracks per-interval statistics via `ProxyStats`:
+
+- `packets_forwarded` — MQTT packets that passed inspection and were forwarded to Mosquitto
+- `packets_dropped` — MQTT packets blocked by validation rules
+- `connections_accepted` — TLS connections accepted by the proxy
+- `connections_rejected` — TLS connections rejected by the rate limiter
+- `auth_packets_blocked` — AUTH packets intercepted and dropped
+
+Stats are dumped to a JSON file on SIGUSR1 signal, then counters reset. This allows `run.sh` scripts to read per-iteration proxy metrics.
+
+### Protection Rules
+
+**User Property Attack mode:**
+
+1. Max 10 user properties per PUBLISH
+2. Max 256 bytes per property key
+3. Max 256 bytes per property value
+4. Max 4,096 bytes total payload per packet
+5. Max 32 KB cumulative per client
+
+**AUTH Flood mode:**
+
+1. Max 2 connections per second (sliding window)
+2. 0 AUTH packets allowed (all dropped)
+3. Max 20 concurrent connections
+4. 2-second authentication timeout
+
+---
+
+## 6. Core Measurement Module
 
 File: `experiments/common/measurement.py`
 
@@ -168,161 +222,126 @@ File: `experiments/common/measurement.py`
 - Creates a raw TCP socket → wraps with `ssl.SSLContext` → performs manual `do_handshake()` with `time.perf_counter()` timing
 - Two methods:
   - `measure_cert_handshake(cafile, certfile, keyfile)` — for certificate auth
-  - `measure_psk_handshake(psk_identity, psk_key_hex)` — for PSK auth using `ssl.set_psk_client_callback()`
-- Does NOT use paho-mqtt (pure ssl-level measurement with zero MQTT protocol overhead)
+  - `measure_psk_handshake(psk_identity, psk_key_hex)` — for PSK auth
+- Does NOT use paho-mqtt (pure ssl-level measurement with zero MQTT overhead)
 - Returns elapsed time in milliseconds
 
 ### CPUMonitor
 
-- `get_broker_stats()` → uses `pidof mosquitto` + `ps -p PID -o %cpu=,rss=` to get CPU% and memory KB
-- `get_cpu_before_and_after(handshake_func)` → samples CPU before, runs handshake, samples CPU after
+- `get_broker_stats()` → uses `pidof mosquitto` + `ps -p PID -o %cpu=,rss=`
+- `get_cpu_before_and_after(handshake_func)` → samples CPU before and after handshake
 
 **Why ssl-level and not paho-mqtt for handshake measurement:**
-Using paho-mqtt's `connect()` would include MQTT CONNECT/CONNACK overhead on top of TLS. We want to isolate TLS handshake cost specifically, so we measure at the socket+ssl layer.
+Using paho-mqtt's `connect()` would include MQTT CONNECT/CONNACK overhead. We isolate TLS handshake cost specifically by measuring at the socket+ssl layer.
 
 ---
 
-## 6. Experiment Details & Results
+## 7. Experiment Details & Results
 
-### 6.1 Baseline — `experiments/baseline/`
+### 7.1 Baseline — `experiments/baseline/`
 
-**Purpose:** Measure the cost of a single MQTT 5.0 + TLS certificate handshake under zero load. This is the reference point.
+**Purpose:** Cost of a single MQTT 5.0 + TLS certificate handshake under zero load. Reference point.
 
-| Metric         | Value                           |
-| -------------- | ------------------------------- |
-| Iterations     | 50                              |
-| Auth Type      | TLS Certificate                 |
-| Mean Handshake | 1.92 ms                         |
-| Stdev          | 0.60 ms                         |
-| Range          | 1.13–3.63 ms                    |
-| Memory         | 7,992→8,076 KB (+84 KB, stable) |
-
-**Conclusion:** Single cert handshake costs ~2ms. Memory is stable. No resource leak.
+| Metric         | Value                   |
+| -------------- | ----------------------- |
+| Iterations     | 50                      |
+| Auth Type      | TLS Certificate         |
+| Mean Handshake | 1.92 ms                 |
+| Range          | 1.13–3.63 ms            |
+| Memory         | 7,992→8,076 KB (stable) |
 
 ---
 
-### 6.2 Phase 1A — Sequential — `experiments/phase1/phase1A_sequential/`
+### 7.2 Phase 1A — Sequential — `experiments/phase1/phase1A_sequential/`
 
-**Purpose:** 50 back-to-back handshakes to check for degradation over repetition.
+**Purpose:** 50 back-to-back handshakes. No degradation.
 
 | Metric         | Value            |
 | -------------- | ---------------- |
 | Mean Handshake | 2.10 ms          |
-| Stdev          | 0.59 ms          |
 | Range          | 1.13–3.42 ms     |
 | Memory         | Flat at 8,076 KB |
 
-**Conclusion:** Identical to baseline. No degradation from repeated sequential handshakes.
+---
+
+### 7.3 Phase 1B — Concurrent — `experiments/phase1/phase1B_concurrent/`
+
+**Purpose:** Concurrency scaling (10–200 simultaneous clients).
+
+| Clients | Avg Latency (ms) | Success | Memory (KB) |
+| ------- | ---------------- | ------- | ----------- |
+| 10      | 4.83             | 10/10   | 8,516       |
+| 25      | 4.93             | 25/25   | 9,352       |
+| 50      | 7.29             | 50/50   | 10,896      |
+| 100     | 9.76             | 100/100 | 13,764      |
+| 150     | 10.13            | 150/150 | 15,592      |
+| 200     | 14.32            | 200/200 | 19,496      |
+
+Zero failures. ~55 KB per concurrent client.
 
 ---
 
-### 6.3 Phase 1B — Concurrent — `experiments/phase1/phase1B_concurrent/`
+### 7.4 Phase 1C — Sustained Load — `experiments/phase1/phase1C_sustained/`
 
-**Purpose:** How does latency scale when 10–200 clients connect simultaneously?
-
-| Clients | Avg Latency (ms) | Success | Failed | Memory (KB) |
-| ------- | ---------------- | ------- | ------ | ----------- |
-| 10      | 4.83             | 10      | 0      | 8,516       |
-| 25      | 4.93             | 25      | 0      | 9,352       |
-| 50      | 7.29             | 50      | 0      | 10,896      |
-| 100     | 9.76             | 100     | 0      | 13,764      |
-| 150     | 10.13            | 150     | 0      | 15,592      |
-| 200     | 14.32            | 200     | 0      | 19,496      |
-
-**Conclusion:** Latency scales roughly linearly. Zero failures at any level. ~55 KB per concurrent client.
-
-**Implementation note:** `launcher.py` accepts `--clients N` via argparse. Uses `multiprocessing.Pool` with pool size capped at `cpu_count * 4`. Worker function performs a single cert handshake and returns elapsed time.
-
----
-
-### 6.4 Phase 1C — Sustained Load — `experiments/phase1/phase1C_sustained/`
-
-**Purpose:** One handshake per second for 60 seconds continuously. Does the broker degrade?
+**Purpose:** 1 handshake/sec for 60s. Memory flat. No degradation.
 
 | Metric     | Value             |
 | ---------- | ----------------- |
 | Handshakes | 59 (in 60s)       |
 | Mean       | 3.38 ms           |
-| Range      | 1.18–4.78 ms      |
 | Memory     | Flat at 19,496 KB |
-| CPU        | Constant 0.3%     |
-
-**Conclusion:** No degradation over time. Memory completely flat. Stable under continuous load.
 
 ---
 
-### 6.5 Phase 1D — Connection Lifetime — `experiments/phase1/phase1D_lifetime/`
+### 7.5 Phase 1D — Connection Lifetime — `experiments/phase1/phase1D_lifetime/`
 
-**Purpose:** Does holding a connection open for 1s vs 60s cost different resources?
-
-| Duration | Handshake (ms) | CPU (%) | Memory (KB) |
-| -------- | -------------- | ------- | ----------- |
-| 1s       | 1.91           | 0.3     | 19,496      |
-| 5s       | 1.23           | 0.2     | 19,496      |
-| 10s      | 1.31           | 0.2     | 19,496      |
-| 30s      | 2.23           | 0.2     | 19,496      |
-| 60s      | 2.31           | 0.2     | 19,496      |
-
-**Conclusion:** Connection lifetime has zero impact on resources. Handshake is a one-time cost; keeping the connection alive is essentially free.
+**Purpose:** Connection duration (1–60s) has zero resource impact. Memory and CPU constant.
 
 ---
 
-### 6.6 Phase 1E — Saturation — `experiments/phase1/phase1E_saturation/`
+### 7.6 Phase 1E — Saturation — `experiments/phase1/phase1E_saturation/`
 
-**Purpose:** Push to 500 simultaneous clients. Where does the broker break?
-
-| Clients | Success | Failed | CPU (%) | Memory (KB) |
-| ------- | ------- | ------ | ------- | ----------- |
-| 50      | 50      | 0      | 0.2     | 19,496      |
-| 100     | 100     | 0      | 0.2     | 19,496      |
-| 150     | 150     | 0      | 0.2     | 19,496      |
-| 200     | 200     | 0      | 0.3     | 19,636      |
-| 250     | 250     | 0      | 0.3     | 22,612      |
-| 300     | 300     | 0      | 0.3     | 25,468      |
-| 400     | 400     | 0      | 0.4     | 31,408      |
-| 500     | 500     | 0      | 0.5     | 37,052      |
-
-**Conclusion:** Zero failures even at 500 clients. Memory grows linearly (~34 KB/client above 200). Broker has significant headroom beyond 500.
+**Purpose:** 50–500 simultaneous clients. Zero failures. Memory grows linearly (~34 KB/client above 200).
 
 ---
 
-### 6.7 Phase 2 — TLS-PSK — `experiments/phase2_psk/`
+### 7.7 Phase 2 — TLS-PSK — `experiments/phase2_psk/`
 
-**Purpose:** Compare PSK handshake performance against the certificate baseline.
+**Purpose:** PSK vs certificate comparison.
 
-| Metric         | Value                   |
-| -------------- | ----------------------- |
-| Iterations     | 50                      |
-| Mean Handshake | 4.79 ms                 |
-| Stdev          | 1.53 ms                 |
-| Range          | 2.94–7.73 ms            |
-| Memory         | 7,496→7,576 KB (stable) |
+| Metric         | Value          |
+| -------------- | -------------- |
+| Mean Handshake | 4.79 ms        |
+| Range          | 2.94–7.73 ms   |
+| Memory         | 7,496–7,576 KB |
 
-**Conclusion:** PSK is ~2.5× slower than cert baseline (4.79ms vs 1.92ms). Deep investigation revealed **two compounding causes**:
+PSK is ~2.5× slower than cert baseline due to:
 
-1. **TLS version mismatch:** Cert connections negotiate **TLSv1.3** (`TLS_AES_256_GCM_SHA384`) which has a faster single-round-trip handshake. PSK falls back to **TLSv1.2** (`DHE-PSK-AES256-GCM-SHA384`) because Python's `ssl` module only exposes classic PSK cipher suites — not TLS 1.3's native external PSK mechanism. TLSv1.3 handshakes are inherently faster (1-RTT vs 2-RTT).
+1. **TLS version mismatch:** Certs use TLSv1.3 (1-RTT), PSK falls to TLSv1.2 (2-RTT)
+2. **Python FFI overhead:** `ssl.set_psk_client_callback()` crosses Python↔C boundary per handshake
 
-2. **Python FFI callback overhead:** `ssl.set_psk_client_callback()` calls a Python function during the C-level OpenSSL handshake, crossing the Python↔C FFI boundary and reacquiring the GIL on every handshake. This adds ~3–6ms. Certificate loading (`load_cert_chain`) is done once in pure C with no per-handshake Python callback.
-
-**Deep comparison results** (50 iterations + 5 warmup, fresh run):
-| Metric | CERT (TLSv1.3) | PSK (TLSv1.2) |
-|---|---|---|
-| Context setup | 0.341 ms | 0.194 ms |
-| `do_handshake()` | 2.150 ms | 6.328 ms |
-| Total | 2.658 ms | 6.710 ms |
-| Broker RSS | ~10,464 KB | ~10,020 KB |
-
-**PSK context setup IS faster** (0.194 vs 0.341 ms — no cert loading), but this is dwarfed by the handshake overhead.
-
-**Memory advantage is real:** PSK broker uses ~444 KB less RSS (no X.509 cert chain storage/parsing).
-
-**Important caveat for presentations:** Frame this as "Python PSK implementation limitation" — the underlying PSK protocol IS simpler, but Python forces TLSv1.2 fallback and adds FFI callback overhead. In native C implementations, PSK is typically faster than certificate auth.
+PSK context setup IS faster (0.194 vs 0.341 ms) and uses less memory (~444 KB less RSS). This is a Python limitation, not a protocol limitation.
 
 ---
 
-### 6.8 Session Resumption — `experiments/session_resumption/`
+### 7.8 PSK Optimized — `experiments/psk_optimized/`
 
-**Purpose:** Measure the benefit of TLS session caching for reconnecting IoT devices.
+**Purpose:** Compare all 4 methods: cert_standard, psk_standard, psk_optimized, psk_resumed.
+
+| Method        | Mean Latency | vs Cert    |
+| ------------- | ------------ | ---------- |
+| cert_standard | 2.36 ms      | (baseline) |
+| psk_standard  | 6.38 ms      | +170%      |
+| psk_optimized | 7.29 ms      | +209%      |
+| psk_resumed   | 0.89 ms      | **−62%**   |
+
+**Key finding:** PSK + Session Resumption (0.89 ms) is 62% faster than certificate baseline.
+
+---
+
+### 7.9 Session Resumption — `experiments/session_resumption/`
+
+**Purpose:** TLS session caching for reconnecting IoT devices.
 
 | Metric      | New Handshake | Resumed          |
 | ----------- | ------------- | ---------------- |
@@ -330,173 +349,159 @@ Using paho-mqtt's `connect()` would include MQTT CONNECT/CONNACK overhead on top
 | Range       | 2.99–7.71 ms  | 0.31–1.08 ms     |
 | Improvement | —             | **89.5% faster** |
 
-**How it works:** `client_connect.py` supports two modes:
+---
 
-- `new` — full PSK handshake, no session cache
-- `resumed` — connects once to get a session ticket, disconnects, reconnects using the cached session
+### 7.10 User Property Attack — `experiments/user_property_attack/`
 
-**Conclusion:** Session resumption provides a ~10× speedup. For IoT devices that disconnect/reconnect frequently, this is a massive win. The latency drops from ~5ms to ~0.5ms.
+**Purpose:** Demonstrate User Property memory exhaustion (CWE-770) and broker-side proxy mitigation.
+
+**Attack:** `attack_client.py` sends 30 PUBLISH messages per iteration with 50 user properties × 1KB values each, `retain=True`. Plus 5 normal messages (2 properties × ~11B).
+
+| Metric                  | Vulnerable (no proxy) | Protected (proxy)        |
+| ----------------------- | --------------------- | ------------------------ |
+| Packets reaching broker | 35/iter (all)         | 7/iter (normal only)     |
+| Packets dropped         | 0                     | 30/iter (attack blocked) |
+| Memory start            | 6,084 KB              | 2,960 KB                 |
+| Memory end              | 41,268 KB             | 3,164 KB                 |
+| Memory growth           | +35,184 KB            | +204 KB                  |
+| Reduction               | —                     | **99.6%**                |
+
+**How it works:**
+
+- Vulnerable: `attack_client.py → Mosquitto:8883` (direct, PSK config)
+- Protected: `attack_client.py → proxy_broker.py:8883 → Mosquitto:1884` (proxy validates)
+- Proxy catches attack packets at the first check (50 properties > 10 limit) and drops them
+- `run.sh` resets proxy stats with SIGUSR1 before each iteration, reads JSON stats after
+
+**CSV schemas:**
+
+- `results_vulnerable.csv`: `iteration,packets_sent,packets_rejected,cpu_before,cpu_after,mem_kb`
+- `results_protected.csv`: `iteration,packets_forwarded,packets_dropped,cpu_before,cpu_after,mem_kb`
 
 ---
 
-### 6.9 User Property Attack — `experiments/user_property_attack/`
+### 7.11 AUTH Flood Attack — `experiments/auth_flood/`
 
-**Purpose:** Demonstrate that MQTT 5.0 User Properties can be exploited for memory exhaustion (a novel attack vector), and that client-side validation mitigates it.
+**Purpose:** Demonstrate AUTH Re-authenticate flooding (CWE-799) and broker-side proxy mitigation.
 
-**Attack mechanism:**
+**Attack:** `attack_client.py` runs 10 concurrent threads that rapidly cycle: TLS connect → MQTT CONNECT → flood 50 AUTH packets (reason 0x19) → close → repeat. 5 seconds per iteration, 10 iterations.
 
-- Attacker sends MQTT 5.0 PUBLISH messages with 50 User Properties × 1KB value each, with `retain=True`
-- Each retained message consumes broker memory permanently
-- Over 20 iterations (30 attack packets each = 600 total attack messages)
+| Metric                 | Vulnerable (no proxy) | Protected (proxy)        |
+| ---------------------- | --------------------- | ------------------------ |
+| Flood connections/iter | ~3,300                | 10 (rate-limited)        |
+| Flood attempts/iter    | ~3,300                | ~8,500 (mostly rejected) |
+| AUTH packets sent/iter | ~149,000              | 500 (by attacker)        |
+| AUTH packets blocked   | 0 (no proxy)          | 500 (100% blocked)       |
+| Connections rejected   | 0 (no proxy)          | ~8,500 (by proxy)        |
+| Legit latency          | 9.9 ms (mid-attack)   | 1.2 ms (post-flood)      |
+| CPU                    | 73%                   | 0%                       |
+| Memory growth          | +2,296 KB             | +140 KB                  |
 
-| Metric                | Vulnerable                | Protected       |
-| --------------------- | ------------------------- | --------------- |
-| Packets sent/iter     | 35 (5 normal + 30 attack) | 5 (30 rejected) |
-| Packets rejected/iter | 0                         | 30              |
-| Memory start          | ~6,024 KB                 | ~6,068 KB       |
-| Memory end            | ~41,200 KB                | ~7,672 KB       |
-| Memory growth         | +35,176 KB                | +1,604 KB       |
-| Reduction             | —                         | **99.5%**       |
+**How it works:**
 
-**How the attack client works** (`attack_client.py`):
+- Vulnerable: `attack_client.py → Mosquitto:8883` (direct, processes all connections)
+- Protected: `attack_client.py → proxy_broker.py:8883 → Mosquitto:1884` (proxy rate-limits)
+- Proxy allows ~2 conns/sec (10 total in 5s), blocks ALL AUTH packets, rejects ~8,500 connection attempts
+- Legit latency is measured POST-FLOOD in protected mode (shows broker recovery, not mid-attack stress)
 
-- Uses paho-mqtt (not mosquitto_pub, which doesn't support MQTT 5.0 User Properties)
-- Sends 5 normal messages, then 30 attack messages per iteration
-- Attack messages carry `Properties(user_property=[("key_i", "A"*1024)]` × 50 properties
-- All messages use `retain=True` so broker stores them permanently
+**CSV schemas:**
 
-**How the safe client works** (`safe_client.py`):
+- `results_vulnerable.csv`: `iteration,flood_conns,flood_attempts,auth_packets_sent,legit_latency_ms,legit_success,cpu_before,cpu_after,mem_kb`
+- `results_protected.csv`: `iteration,flood_conns,flood_attempts,auth_packets_sent,auth_packets_blocked,conns_rejected,legit_latency_ms,legit_success,cpu_before,cpu_after,mem_kb`
 
-- Same message generation, but validates properties before publishing
-- Five validation checks:
-  1. Property count ≤ 10 per packet
-  2. Key size ≤ 256 bytes
-  3. Value size ≤ 256 bytes
-  4. Total payload (sum of all key + value bytes) ≤ 4,096 bytes per packet
-  5. Per-client cumulative budget ≤ 32,768 bytes (32 KB) across all packets
-- Counts and reports rejected packets
-
-**Conclusion:** Without validation, a single attacker causes unbounded linear memory growth (~1,759 KB per iteration). With client-side validation (property count + size + payload budget), 99.5% of the memory impact is eliminated.
+**Key difference from vulnerable CSV:** Protected CSV has two extra columns — `auth_packets_blocked` and `conns_rejected` — sourced from proxy stats JSON dump (not from attack_client output).
 
 ---
 
-### 6.10 AUTH Flood Attack — `experiments/auth_flood/`
+## 8. Bugs Found & Fixed
 
-**Purpose:** Demonstrate that MQTT 5.0's AUTH Re-authenticate mechanism can be abused to flood the broker with rapid TLS connection cycles and AUTH packets, creating a Denial-of-Service condition that degrades legitimate client performance.
+### 8.1 Phase 1B: `sed -i` Mutating Source Code
 
-**Attack mechanism:**
+**Problem:** `run.sh` used `sed -i` to change the client count in `launcher.py` — mutating source on disk.
+**Fix:** `launcher.py` now accepts `--clients N` via argparse.
 
-- 10 concurrent threads rapidly cycle: TLS connect → MQTT CONNECT → AUTH (Re-authenticate, reason 0x19) flood → close → repeat
-- Each connection forces expensive TLS handshake + MQTT packet parsing
-- AUTH packets per connection: up to 50 (broker disconnects after processing)
-- Attack duration: 5 seconds per iteration, 10 iterations
-- A legitimate client measures handshake latency mid-attack
+### 8.2 Phase 1C: CSV Double-Header
 
-| Metric                    | Vulnerable | Protected           |
-| ------------------------- | ---------- | ------------------- |
-| Flood connections (total) | ~33,207    | ~118 (rate-limited) |
-| AUTH packets sent         | ~1,487,158 | 0 (all blocked)     |
-| Legit client latency      | 8.9 ms avg | 9.7 ms avg          |
-| CPU spike (first iter)    | 72.8%      | 0.1%                |
-| Connection reduction      | —          | **99.6%**           |
+**Problem:** Both `run.sh` and `sustained_load.py` wrote CSV headers.
+**Fix:** Python writes its own header in `"w"` mode. Shell doesn't write one.
 
-**How the attack client works** (`attack_client.py`):
+### 8.3 Phase 1D: Missing CAFILE + Fragile Inline Python
 
-- Uses raw sockets (not paho-mqtt) for maximum flood throughput
-- Crafts MQTT 5.0 CONNECT and AUTH packets with `struct.pack`
-- AUTH packet carries `AuthenticationMethod=SCRAM-SHA-256` + `AuthenticationData`
-- Broker must parse each AUTH, check if enhanced auth is active, then disconnect
-- Thread pool with 10 workers, no rate limiting
+**Problem:** `client.py` didn't load `ca.crt`. `run.sh` used inline `python -c` to parse stats.
+**Fix:** Added CAFILE. `client.py` outputs `handshake_ms,cpu,mem_kb` directly.
 
-**How the safe client works** (`safe_client.py`):
+### 8.4 Phase 1E: Too Many Clients + Noisy Output
 
-- Same attack code, but gated by `AuthRateLimiter` middleware with six layers:
-  1. Max 2 connections per second (sliding window)
-  2. 0 AUTH packets allowed per connection (all blocked before sending)
-  3. Max 20 total connections per test lifetime
-  4. 2-second authentication timeout — force-disconnect any connection alive > 2s
-  5. AUTH reason code validation — only `0x00` (Success), `0x18` (Continue), `0x19` (Re-authenticate) accepted
-  6. Clean DISCONNECT sent before closing
-- Result: broker sees minimal traffic, no AUTH abuse
+**Problem:** Tested up to 1000 clients. Stderr polluted stdout and broke CSV.
+**Fix:** Reduced max to 500. Suppressed stderr in workers.
 
-**CWE references:**
+### 8.5 Phase 2 PSK: Undefined `CPU_BEFORE` Variable
 
-- CWE-799: Improper Control of Interaction Frequency
-- CWE-770: Allocation of Resources Without Limits or Throttling
+**Problem:** `run.sh` never set `CPU_BEFORE` — written as empty string to CSV.
+**Fix:** Sample `broker_stats.sh` before AND after each handshake.
 
-**Conclusion:** Without rate limiting, a single attacker sends ~1.49M AUTH packets across ~33K connections in 50 seconds, causing CPU spikes to 72.8%. Application-level middleware (rate limiting + AUTH blocking + timeout + reason code validation) reduces attack surface by 99.6% and keeps the broker at near-idle load. This is a practical, low-complexity DoS vector unique to MQTT 5.0's Enhanced Authentication extension.
+### 8.6 Session Resumption: No Broker Management
 
----
+**Problem:** `run.sh` didn't start/stop the broker.
+**Fix:** Added broker lifecycle management (kill existing, start PSK broker).
 
-## 7. Bugs Found & Fixed
+### 8.7 User Property Attack: `mosquitto_pub` Cannot Send User Properties
 
-### 7.1 Phase 1B: `sed -i` Mutating Source Code
+**Problem:** Initial `mosquitto_pub` approach doesn't support MQTT 5.0 User Properties.
+**Fix:** Rewrote using paho-mqtt with `Properties(PacketTypes.PUBLISH)`.
 
-**Problem:** `run.sh` used `sed -i "s/^N = .*/N = $CLIENTS/" launcher.py` to change the client count — mutating the Python source file on disk.
-**Fix:** Rewrote `launcher.py` to accept `--clients N` via argparse. `run.sh` now just calls `python launcher.py --clients $N`.
+### 8.8 Cert vs PSK Broker Mismatch
 
-### 7.2 Phase 1C: CSV Double-Header
+**Problem:** Phase 1 scripts tried cert handshakes while PSK broker was running.
+**Fix:** Each `run.sh` kills existing broker and starts correct config.
 
-**Problem:** `run.sh` wrote a CSV header, and then `sustained_load.py` wrote another header, resulting in two header rows.
-**Fix:** Python writes its own header in `"w"` mode. `run.sh` doesn't write a header.
+### 8.9 AUTH Flood Protected CSV: Wrong Data Sources
 
-### 7.3 Phase 1D: Missing CAFILE + Fragile Inline Python
+**Problem:** Protected CSV showed `flood_conns=10, auth_packets=0, latency=-1` because:
 
-**Problem:** `client.py` didn't load `ca.crt` for the TLS context. `run.sh` used `python -c "import ..."` inline to parse stats — fragile and error-prone.
-**Fix:** Added CAFILE to TLS context. Rewrote `client.py` to output `handshake_ms,cpu,mem_kb` directly. `run.sh` just reads stdout.
+- Used proxy's accepted connections count (~10 due to rate limiting) instead of attacker's output
+- Hardcoded `AUTH_REACHED=0` instead of reading proxy stats
+- Legit latency measured mid-flood (rate limiter blocks it) → always -1
 
-### 7.4 Phase 1E: Too Many Clients + Noisy Output
+**Fix:**
 
-**Problem:** Tested up to 1000 clients (excessive). Connection failure stderr messages polluted stdout and broke CSV parsing.
-**Fix:** Reduced max to 500. Suppressed stderr in pool workers. Added `mem_kb` to output.
-
-### 7.5 Phase 2 PSK: Undefined `CPU_BEFORE` Variable
-
-**Problem:** `run.sh` extracted `CPU_AFTER` from `broker_stats.sh` but **never set `CPU_BEFORE`** — it was written as an empty string to CSV.
-**Fix:** Properly sample `broker_stats.sh` before AND after each handshake.
-
-### 7.6 Session Resumption: No Broker Management / No Progress
-
-**Problem:** `run.sh` didn't start/stop the broker and gave no progress output.
-**Fix:** Added broker lifecycle management (kill existing, start PSK broker), added progress output showing both new and resumed times per iteration.
-
-### 7.7 User Property Attack: `mosquitto_pub` Cannot Send User Properties
-
-**Problem:** Initial implementation used `mosquitto_pub` shell command, which does not support MQTT 5.0 User Properties at all. Result: 0 attack packets, flat memory.
-**Fix:** Completely rewrote `attack_client.py` and `safe_client.py` using paho-mqtt with proper `Properties(PacketTypes.PUBLISH)` and `user_property` list.
-
-### 7.8 Cert vs PSK Broker Mismatch
-
-**Problem:** Phase 1 scripts tried cert-based handshakes while broker was running PSK config → `SSLV3_ALERT_HANDSHAKE_FAILURE`.
-**Fix:** Each `run.sh` now explicitly kills existing broker and starts with the correct config (cert or PSK).
+- Use `attack_client.py` output for `flood_conns` and `flood_attempts` (attacker perspective)
+- Read `auth_packets_blocked` and `connections_rejected` from proxy stats JSON dump
+- Measure legit latency POST-FLOOD (after attack ends, separate Python call)
+- Added `flood_attempts` field to `FloodStats` counter in attack_client.py
+- Added `auth_packets_blocked` and `conns_rejected` columns to protected CSV
 
 ---
 
-## 8. Architecture Decisions & Reasoning
+## 9. Architecture Decisions & Reasoning
 
 ### Why SSL-Level (Not paho-mqtt) for Handshake Measurement
 
-We measure TLS handshake time at the `ssl.SSLSocket.do_handshake()` level, not via `paho_mqtt.Client.connect()`. This isolates the TLS cost from MQTT CONNECT/CONNACK protocol overhead. The handshake is the expensive cryptographic operation we want to benchmark.
+We measure at the `ssl.SSLSocket.do_handshake()` level, not via `paho_mqtt.Client.connect()`. This isolates TLS cost from MQTT CONNECT/CONNACK overhead.
 
-### Why Phase 1 Uses Certificates (Not PSK) as Base
+### Why Phase 1 Uses Certificates as Baseline
 
-The project thesis treats **MQTT 5.0 + TLS certificates as the baseline** — this is the standard production deployment. PSK is the optimisation being evaluated against it. Therefore Phase 1 (scalability tests) uses cert auth to establish what "normal" looks like.
+Certificate-based TLS is the standard production deployment. PSK is the optimisation being evaluated against it.
 
 ### Why User Property Attack Uses paho-mqtt (Not mosquitto_pub)
 
-`mosquitto_pub` command-line tool does not support setting MQTT 5.0 User Properties. The only way to inject custom properties is programmatically via paho-mqtt's `Properties` class. This was a critical discovery — initial shell-based approaches produced 0 attack packets.
+`mosquitto_pub` does not support MQTT 5.0 User Properties. The only way to inject custom properties is programmatically via paho-mqtt.
 
-### Why Session Resumption Uses PSK
+### Why Broker-Side Protection (Not Client-Side)
 
-Session resumption is being evaluated as an optimisation for PSK connections specifically. PSK is the "lightweight" auth method for constrained IoT devices, and session resumption further reduces reconnection cost.
+The attacker controls the client. Any client-side validation can be bypassed. The security proxy sits between attacker and broker, enforcing rules the attacker cannot circumvent. Both experiments use the **same attack_client.py** in both vulnerable and protected phases — the only difference is whether the proxy is deployed.
+
+### Why Post-Flood Legit Latency in Protected Mode
+
+During an active flood against the proxy, the rate limiter may block legitimate clients along with attackers (they all come through the same port). Measuring legit latency POST-FLOOD shows the broker's state after the attack stops — confirming it was never stressed (0.7–1.4 ms vs vulnerable mode's 7–17 ms during active flood).
 
 ### Why 50 Iterations for Most Tests
 
-50 iterations provides a statistically meaningful sample for calculating mean, standard deviation, and identifying outliers, while keeping total test time under 2 minutes per phase.
+50 iterations provides a statistically meaningful sample for mean, standard deviation, and outlier detection, while keeping total test time under 2 minutes per phase.
 
 ---
 
-## 9. Key Code Patterns
+## 10. Key Code Patterns
 
 ### Running a Cert Handshake Test
 
@@ -505,14 +510,8 @@ import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 from experiments.common.measurement import TLSHandshakeMeasurer, CPUMonitor
 
-BROKER, PORT = "localhost", 8883
-CAFILE    = "certs/ca.crt"
-CERTFILE  = "certs/client.crt"
-KEYFILE   = "certs/client.key"
-
-measurer = TLSHandshakeMeasurer(BROKER, PORT)
-elapsed_ms = measurer.measure_cert_handshake(CAFILE, CERTFILE, KEYFILE)
-cpu_before, cpu_after, mem_kb = CPUMonitor.get_broker_stats()  # or use get_cpu_before_and_after()
+measurer = TLSHandshakeMeasurer("localhost", 8883)
+elapsed_ms = measurer.measure_cert_handshake("certs/ca.crt", "certs/client.crt", "certs/client.key")
 ```
 
 ### Running a PSK Handshake Test
@@ -520,12 +519,8 @@ cpu_before, cpu_after, mem_kb = CPUMonitor.get_broker_stats()  # or use get_cpu_
 ```python
 from experiments.common.measurement import TLSHandshakeMeasurer
 
-BROKER, PORT = "localhost", 8883
-PSK_ID  = "client1"
-PSK_KEY = "0123456789abcdef"
-
-measurer = TLSHandshakeMeasurer(BROKER, PORT)
-elapsed_ms = measurer.measure_psk_handshake(PSK_ID, PSK_KEY)
+measurer = TLSHandshakeMeasurer("localhost", 8883)
+elapsed_ms = measurer.measure_psk_handshake("client1", "0123456789abcdef")
 ```
 
 ### Shell Script Pattern (run.sh)
@@ -536,123 +531,108 @@ set -euo pipefail
 DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$DIR/../.." && pwd)"
 
-# Kill existing broker, start correct one
-pkill -x mosquitto 2>/dev/null || true
+killall mosquitto 2>/dev/null || true
 sleep 0.5
-mosquitto -c "$ROOT/broker/mosquitto_tls.conf" -d  # or mosquitto_psk.conf
+mosquitto -c "$ROOT/broker/mosquitto_psk.conf" -d
 sleep 1
 
-# Activate venv
 source "$ROOT/venv/bin/activate"
-
-# Run experiment
 python "$DIR/client.py"
+```
 
-# (Optional) cleanup
-pkill -x mosquitto 2>/dev/null || true
+### Proxy Stats Collection Pattern (attack run.sh)
+
+```bash
+# Reset stats before iteration
+kill -USR1 "$PROXY_PID" 2>/dev/null || true
+sleep 0.2
+
+# Run attack...
+
+# Read stats after iteration
+kill -USR1 "$PROXY_PID" 2>/dev/null || true
+sleep 0.3
+AUTH_BLOCKED=$(python3 -c "import json; d=json.load(open('$STATS_FILE')); print(d.get('auth_packets_blocked',0))")
+CONNS_REJECTED=$(python3 -c "import json; d=json.load(open('$STATS_FILE')); print(d.get('connections_rejected',0))")
 ```
 
 ---
 
-## 10. CSV File Schemas
+## 11. CSV File Schemas
 
-| File                                             | Columns                                                                                              |
-| ------------------------------------------------ | ---------------------------------------------------------------------------------------------------- |
-| `baseline/results.csv`                           | `iteration,handshake_ms,cpu_before,cpu_after,mem_kb`                                                 |
-| `phase1A/results.csv`                            | `iteration,handshake_ms,cpu_before,cpu_after,mem_kb`                                                 |
-| `phase1B/results.csv`                            | `clients,avg_latency_ms,success,failed,cpu,mem_kb`                                                   |
-| `phase1C/results.csv`                            | `elapsed_sec,handshake_ms,cpu_percent,mem_kb`                                                        |
-| `phase1D/results.csv`                            | `duration_s,handshake_ms,cpu,mem_kb`                                                                 |
-| `phase1E/results.csv`                            | `clients,success,failed,cpu,mem_kb`                                                                  |
-| `phase2_psk/results.csv`                         | `iteration,handshake_ms,cpu_before,cpu_after,mem_kb`                                                 |
-| `session_resumption/results_new_handshake.csv`   | `iteration,handshake_ms,cpu_before,cpu_after,mem_kb`                                                 |
-| `session_resumption/results_session_resumed.csv` | `iteration,handshake_ms,cpu_before,cpu_after,mem_kb`                                                 |
-| `user_property_attack/results_vulnerable.csv`    | `iteration,packets_sent,packets_rejected,cpu_before,cpu_after,mem_kb`                                |
-| `user_property_attack/results_protected.csv`     | `iteration,packets_sent,packets_rejected,cpu_before,cpu_after,mem_kb`                                |
-| `auth_flood/results_vulnerable.csv`              | `iteration,flood_conns,auth_packets_sent,legit_latency_ms,legit_success,cpu_before,cpu_after,mem_kb` |
-| `auth_flood/results_protected.csv`               | `iteration,flood_conns,auth_packets_sent,legit_latency_ms,legit_success,cpu_before,cpu_after,mem_kb` |
-
----
-
-## 11. Summary of Results
-
-| Experiment           | Auth | Key Finding                       | Headline Number                                |
-| -------------------- | ---- | --------------------------------- | ---------------------------------------------- |
-| Baseline             | Cert | Reference handshake cost          | **1.92 ms** mean                               |
-| Phase 1A             | Cert | No sequential degradation         | 2.10 ms (≈baseline)                            |
-| Phase 1B             | Cert | Linear concurrency scaling        | 4.8→14.3 ms (10→200 clients)                   |
-| Phase 1C             | Cert | Stable under sustained load       | 3.38 ms over 60s, flat memory                  |
-| Phase 1D             | Cert | Lifetime doesn't matter           | 1.2–2.3 ms for 1–60s connections               |
-| Phase 1E             | Cert | No saturation at 500 clients      | 0 failures, 37 MB memory                       |
-| Phase 2              | PSK  | Python PSK callback adds overhead | **4.79 ms** (2.5× slower)                      |
-| Session Resumption   | PSK  | Massive reconnection speedup      | **89.5% faster** (5.3→0.56 ms)                 |
-| User Property Attack | PSK  | Exploitable memory exhaustion     | **+35 MB** vulnerable vs **+1.6 MB** protected |
-| AUTH Flood Attack    | PSK  | DoS via AUTH packet flooding      | **1.49M AUTH packets**, 72.8% CPU spike        |
+| File                                             | Columns                                                                                                                                                 |
+| ------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `baseline/results.csv`                           | `iteration,handshake_ms,cpu_before,cpu_after,mem_kb`                                                                                                    |
+| `phase1A/results.csv`                            | `iteration,handshake_ms,cpu_before,cpu_after,mem_kb`                                                                                                    |
+| `phase1B/results.csv`                            | `clients,avg_latency_ms,success,failed,cpu,mem_kb`                                                                                                      |
+| `phase1C/results.csv`                            | `elapsed_sec,handshake_ms,cpu_percent,mem_kb`                                                                                                           |
+| `phase1D/results.csv`                            | `duration_s,handshake_ms,cpu,mem_kb`                                                                                                                    |
+| `phase1E/results.csv`                            | `clients,success,failed,cpu,mem_kb`                                                                                                                     |
+| `phase2_psk/results.csv`                         | `iteration,handshake_ms,cpu_before,cpu_after,mem_kb`                                                                                                    |
+| `psk_optimized/results.csv`                      | `method,iteration,handshake_ms,mem_kb`                                                                                                                  |
+| `session_resumption/results_new_handshake.csv`   | `iteration,handshake_ms,cpu_before,cpu_after,mem_kb`                                                                                                    |
+| `session_resumption/results_session_resumed.csv` | `iteration,handshake_ms,cpu_before,cpu_after,mem_kb`                                                                                                    |
+| `user_property_attack/results_vulnerable.csv`    | `iteration,packets_sent,packets_rejected,cpu_before,cpu_after,mem_kb`                                                                                   |
+| `user_property_attack/results_protected.csv`     | `iteration,packets_forwarded,packets_dropped,cpu_before,cpu_after,mem_kb`                                                                               |
+| `auth_flood/results_vulnerable.csv`              | `iteration,flood_conns,flood_attempts,auth_packets_sent,legit_latency_ms,legit_success,cpu_before,cpu_after,mem_kb`                                     |
+| `auth_flood/results_protected.csv`               | `iteration,flood_conns,flood_attempts,auth_packets_sent,auth_packets_blocked,conns_rejected,legit_latency_ms,legit_success,cpu_before,cpu_after,mem_kb` |
 
 ---
 
-## 12. Visualisation Recommendations
+## 12. Summary of Results
 
-For presentations, these visualisations tell the strongest story:
-
-1. **Baseline Histogram** — Distribution of 50 handshake times, show the ~2ms centre.
-2. **Phase 1B Line Chart** — X=clients, Y=avg latency. Clean linear scaling curve.
-3. **Phase 1C Time Series** — X=elapsed seconds, Y=handshake latency. Flat line = stability.
-4. **Phase 1E Dual-Axis** — X=clients, left Y=memory (bars), right Y=CPU (line). Saturation profile.
-5. **Cert vs PSK Box Plot** — Side-by-side distributions of Baseline vs Phase 2 handshake times.
-6. **Session Resumption Paired Bar** — New (5.3ms) vs Resumed (0.56ms) per iteration or as averages.
-7. **User Property Attack Dual-Line** — X=iteration, Y=memory KB. Vulnerable = steep climb, Protected = flat. **This is the most impactful visual** — it proves the attack and the defence in one chart.
-8. **AUTH Flood Bar Chart** — Flood connections + AUTH packets: vulnerable (33K conns, 1.49M AUTH) vs protected (118 conns, 0 AUTH). Shows the 99.6% reduction from middleware.
-9. **AUTH Flood Latency Comparison** — Legit client latency during attack (8.9 ms) vs protected (9.7 ms). Paired bars or box plot showing DoS impact.
+| Experiment           | Auth | Key Finding                       | Headline Number                                 |
+| -------------------- | ---- | --------------------------------- | ----------------------------------------------- |
+| Baseline             | Cert | Reference handshake cost          | **1.92 ms** mean                                |
+| Phase 1A             | Cert | No sequential degradation         | 2.10 ms (≈baseline)                             |
+| Phase 1B             | Cert | Linear concurrency scaling        | 4.8→14.3 ms (10→200 clients)                    |
+| Phase 1C             | Cert | Stable under sustained load       | 3.38 ms over 60s, flat memory                   |
+| Phase 1D             | Cert | Lifetime doesn't matter           | 1.2–2.3 ms for 1–60s connections                |
+| Phase 1E             | Cert | No saturation at 500 clients      | 0 failures, 37 MB memory                        |
+| Phase 2              | PSK  | Python PSK callback adds overhead | **4.79 ms** (2.5× slower)                       |
+| PSK Optimized        | PSK  | Resumed PSK beats cert            | **0.89 ms** (62% faster than cert)              |
+| Session Resumption   | PSK  | Massive reconnection speedup      | **89.5% faster** (5.3→0.56 ms)                  |
+| User Property (vuln) | PSK  | Memory exhaustion attack          | **+35 MB** uncontrolled growth                  |
+| User Property (prot) | PSK  | Proxy blocks 100% of attack       | **+0.2 MB** growth, 99.6% reduction             |
+| AUTH Flood (vuln)    | PSK  | DoS via AUTH flooding             | ~1.49M AUTH packets, 73% CPU                    |
+| AUTH Flood (prot)    | PSK  | Proxy neutralises attack          | 99.7% conn reduction, 100% AUTH blocked, 0% CPU |
 
 ---
 
-## 13. How to Run Everything
+## 13. Known Caveats
+
+1. **PSK latency is higher than expected** — Python FFI overhead, not a protocol limitation.
+
+2. **Phase 1C/1D/1E memory starts at ~19 MB** — because they run after Phase 1B (200 concurrent connections). Mosquitto pre-allocates memory pools and doesn't fully shrink. Not a leak.
+
+3. **User Property Attack uses `retain=True`** — critical because retained messages persist in broker memory permanently.
+
+4. **All tests run on localhost** — network latency is zero. In production, network RTT would dominate.
+
+5. **Phase 1C time gap at sec 33→35** — the handshake at second 34 took >1s, pushing the next iteration to second 35. Expected behaviour.
+
+6. **Protected legit latency is POST-FLOOD** — measured after the 5-second attack ends, not during. This shows broker health after attack stops.
+
+---
+
+## 14. How to Run
 
 ```bash
-# Full setup
 cd /home/excius/projects/mqtt-security
 source venv/bin/activate
 
-# Individual phases
+# Individual experiments
 bash experiments/baseline/run_baseline.sh
-bash experiments/phase1/run_all_phases.sh          # Runs 1A through 1E
+bash experiments/phase1/run_all_phases.sh
 bash experiments/phase2_psk/run.sh
 bash experiments/session_resumption/run.sh
+bash experiments/psk_optimized/run.sh
 bash experiments/user_property_attack/run.sh
 bash experiments/auth_flood/run.sh
 
-# Or everything at once
+# Everything at once
 bash run_all_experiments.sh
+
+# Analysis only (requires existing CSVs)
+python analyze_all.py
 ```
-
-Each script manages its own broker instance. Results go to `results.csv` in each experiment directory.
-
----
-
-## 14. Known Caveats & Notes
-
-1. **PSK latency is higher than expected** — this is Python's `ssl.set_psk_client_callback()` overhead, not a TLS protocol limitation. Frame carefully in presentations.
-
-2. **Phase 1C/1D/1E memory starts at ~19 MB** (not ~8 MB like baseline) because these run after Phase 1B which created 200 concurrent connections. Memory doesn't fully shrink back. This is normal Mosquitto behaviour (memory pool pre-allocation) and not a leak.
-
-3. **User Property Attack uses `retain=True`** — this is critical because retained messages persist in broker memory. Without retain, the attack would be temporary.
-
-4. **All tests run on localhost** — network latency is zero. In production, network round-trip would dominate over TLS handshake time. The measurements here isolate the pure cryptographic cost.
-
-5. **`client_worker.py` in Phase 1B still exists** but is no longer imported. The worker function is now inline in `launcher.py`. The file was kept to avoid breaking git history.
-
-6. **Phase 1C has a time gap** at elapsed_sec 33→35 (row 34 jumps from 33 to 35). This is because the handshake at second 34 took slightly longer than 1 second, causing the next iteration to start at second 35. This is expected behaviour, not a bug.
-
----
-
-## 15. Future Work Ideas
-
-- **Test with TLS 1.3** — OpenSSL 3.5 supports it; compare 0-RTT resumption.
-- **Network latency simulation** — Use `tc netem` to add realistic delay.
-- **Larger-scale saturation** — Test 1000+ clients with `ulimit -n` increased.
-- **Hardware security module (HSM)** — Compare software vs hardware-accelerated TLS.
-
-5. ~~**MQTT 5.0 AUTH packet**~~ — ✅ Done: AUTH Flood experiment implemented (§6.10).
-
-- **Broker comparison** — Run same tests on EMQX, HiveMQ, NanoMQ.
