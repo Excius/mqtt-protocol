@@ -367,28 +367,28 @@ PSK context setup IS faster (0.194 vs 0.341 ms) and uses less memory (~444 KB le
 
 **Attack Vectors (packet counts randomised each iteration):**
 
-| Vector | Violation | Payload/packet | Rule triggered | Count range |
-|--------|-----------|----------------|----------------|-------------|
-| Normal | 1–5 legitimate properties | ~50 B | — (always forwarded) | 3–10/iter |
-| VT-1 | 25–40 props × 2 KB values, retain=True, unique topic | ~62 KB | Rule 1: property count | 5–15/iter |
-| VT-2 | Key length 300–600 bytes | tiny | Rule 2: key size | 2–10/iter |
-| VT-3 | Single value 5–10 KB, retain=True, unique topic | ~7.5 KB | Rule 3: value size | 2–10/iter |
-| VT-4 | 10 props × (key≈220B + val≈230B) = ~4500B total, retain=True | ~4.5 KB | Rule 4: packet payload | 3–8/iter |
-| VT-5 | 7–8 props × (82B key + 102B val) ≈ 1260B, retain=True | ~1.3 KB | Rule 5: cumulative budget | 30–50/iter |
+| Vector | Violation                                                    | Payload/packet | Rule triggered            | Count range |
+| ------ | ------------------------------------------------------------ | -------------- | ------------------------- | ----------- |
+| Normal | 1–5 legitimate properties                                    | ~50 B          | — (always forwarded)      | 3–10/iter   |
+| VT-1   | 25–40 props × 2 KB values, retain=True, unique topic         | ~62 KB         | Rule 1: property count    | 5–15/iter   |
+| VT-2   | Key length 300–600 bytes                                     | tiny           | Rule 2: key size          | 2–10/iter   |
+| VT-3   | Single value 5–10 KB, retain=True, unique topic              | ~7.5 KB        | Rule 3: value size        | 2–10/iter   |
+| VT-4   | 10 props × (key≈220B + val≈230B) = ~4500B total, retain=True | ~4.5 KB        | Rule 4: packet payload    | 3–8/iter    |
+| VT-5   | 7–8 props × (82B key + 102B val) ≈ 1260B, retain=True        | ~1.3 KB        | Rule 5: cumulative budget | 30–50/iter  |
 
 VT-1/VT-3/VT-4 use `retain=True` + unique per-iteration/per-packet topics so retained messages accumulate in the unprotected broker. VT-5 is calibrated so the 32 KB per-client budget exhausts after ~26 packets — ensuring `budget_drops` fires every iteration.
 
-| Metric                  | Vulnerable (no proxy)                    | Protected (proxy)                            |
-| ----------------------- | ---------------------------------------- | -------------------------------------------- |
-| Total packets sent      | ~70/iter (varies), 1,398 over 20 iters   | 629 forwarded over 20 iters (28–36/iter)     |
-| Packets dropped         | 0                                        | 849 blocked (57.4% block rate)               |
-| Rule 1 drops            | n/a                                      | 186 (count overflow)                         |
-| Rule 2 drops            | n/a                                      | 119 (key size)                               |
-| Rule 3 drops            | n/a                                      | 121 (value size)                             |
-| Rule 4 drops            | n/a                                      | 98 (payload total)                           |
-| Rule 5 drops            | n/a                                      | **325** (budget exhaustion — dominant)       |
-| Memory growth (20 iter) | **+18,140 KB (+18 MB)** 6,020→24,160 KB | +1,276 KB (+1.3 MB) 2,936→4,212 KB          |
-| Memory reduction        | —                                        | **92.6%**                                    |
+| Metric                  | Vulnerable (no proxy)                   | Protected (proxy)                        |
+| ----------------------- | --------------------------------------- | ---------------------------------------- |
+| Total packets sent      | ~70/iter (varies), 1,398 over 20 iters  | 629 forwarded over 20 iters (28–36/iter) |
+| Packets dropped         | 0                                       | 849 blocked (57.4% block rate)           |
+| Rule 1 drops            | n/a                                     | 186 (count overflow)                     |
+| Rule 2 drops            | n/a                                     | 119 (key size)                           |
+| Rule 3 drops            | n/a                                     | 121 (value size)                         |
+| Rule 4 drops            | n/a                                     | 98 (payload total)                       |
+| Rule 5 drops            | n/a                                     | **325** (budget exhaustion — dominant)   |
+| Memory growth (20 iter) | **+18,140 KB (+18 MB)** 6,020→24,160 KB | +1,276 KB (+1.3 MB) 2,936→4,212 KB       |
+| Memory reduction        | —                                       | **92.6%**                                |
 
 **How it works:**
 
@@ -599,7 +599,7 @@ CONNS_REJECTED=$(python3 -c "import json; d=json.load(open('$STATS_FILE')); prin
 | `session_resumption/results_new_handshake.csv`   | `iteration,handshake_ms,cpu_before,cpu_after,mem_kb`                                                                                                    |
 | `session_resumption/results_session_resumed.csv` | `iteration,handshake_ms,cpu_before,cpu_after,mem_kb`                                                                                                    |
 | `user_property_attack/results_vulnerable.csv`    | `iteration,normal_sent,vt1_sent,vt2_sent,vt3_sent,vt4_sent,vt5_sent,total_sent,cpu_before,cpu_after,mem_kb`                                             |
-| `user_property_attack/results_protected.csv`     | `iteration,packets_forwarded,packets_dropped,prop_count_drops,key_size_drops,val_size_drops,payload_drops,budget_drops,cpu_before,cpu_after,mem_kb`      |
+| `user_property_attack/results_protected.csv`     | `iteration,packets_forwarded,packets_dropped,prop_count_drops,key_size_drops,val_size_drops,payload_drops,budget_drops,cpu_before,cpu_after,mem_kb`     |
 | `auth_flood/results_vulnerable.csv`              | `iteration,flood_conns,flood_attempts,auth_packets_sent,legit_latency_ms,legit_success,cpu_before,cpu_after,mem_kb`                                     |
 | `auth_flood/results_protected.csv`               | `iteration,flood_conns,flood_attempts,auth_packets_sent,auth_packets_blocked,conns_rejected,legit_latency_ms,legit_success,cpu_before,cpu_after,mem_kb` |
 
@@ -607,21 +607,21 @@ CONNS_REJECTED=$(python3 -c "import json; d=json.load(open('$STATS_FILE')); prin
 
 ## 12. Summary of Results
 
-| Experiment           | Auth | Key Finding                       | Headline Number                                 |
-| -------------------- | ---- | --------------------------------- | ----------------------------------------------- |
-| Baseline             | Cert | Reference handshake cost          | **1.92 ms** mean                                |
-| Phase 1A             | Cert | No sequential degradation         | 2.10 ms (≈baseline)                             |
-| Phase 1B             | Cert | Linear concurrency scaling        | 4.8→14.3 ms (10→200 clients)                    |
-| Phase 1C             | Cert | Stable under sustained load       | 3.38 ms over 60s, flat memory                   |
-| Phase 1D             | Cert | Lifetime doesn't matter           | 1.2–2.3 ms for 1–60s connections                |
-| Phase 1E             | Cert | No saturation at 500 clients      | 0 failures, 37 MB memory                        |
-| Phase 2              | PSK  | Python PSK callback adds overhead | **4.79 ms** (2.5× slower)                       |
-| PSK Optimized        | PSK  | Resumed PSK beats cert            | **0.89 ms** (62% faster than cert)              |
-| Session Resumption   | PSK  | Massive reconnection speedup      | **89.5% faster** (5.3→0.56 ms)                  |
-| User Property (vuln) | PSK  | Multi-vector injection, no protection  | **+18 MB** uncontrolled growth (6 MB → 24 MB over 20 iters)  |
-| User Property (prot) | PSK  | Proxy blocks all 5 violation types     | **92.6% memory reduction**, 849 pkts blocked (57.4%), budget rule dominant |
-| AUTH Flood (vuln)    | PSK  | DoS via AUTH flooding             | ~1.49M AUTH packets, 73% CPU                    |
-| AUTH Flood (prot)    | PSK  | Proxy neutralises attack          | 99.7% conn reduction, 100% AUTH blocked, 0% CPU |
+| Experiment           | Auth | Key Finding                           | Headline Number                                                            |
+| -------------------- | ---- | ------------------------------------- | -------------------------------------------------------------------------- |
+| Baseline             | Cert | Reference handshake cost              | **1.92 ms** mean                                                           |
+| Phase 1A             | Cert | No sequential degradation             | 2.10 ms (≈baseline)                                                        |
+| Phase 1B             | Cert | Linear concurrency scaling            | 4.8→14.3 ms (10→200 clients)                                               |
+| Phase 1C             | Cert | Stable under sustained load           | 3.38 ms over 60s, flat memory                                              |
+| Phase 1D             | Cert | Lifetime doesn't matter               | 1.2–2.3 ms for 1–60s connections                                           |
+| Phase 1E             | Cert | No saturation at 500 clients          | 0 failures, 37 MB memory                                                   |
+| Phase 2              | PSK  | Python PSK callback adds overhead     | **4.79 ms** (2.5× slower)                                                  |
+| PSK Optimized        | PSK  | Resumed PSK beats cert                | **0.89 ms** (62% faster than cert)                                         |
+| Session Resumption   | PSK  | Massive reconnection speedup          | **89.5% faster** (5.3→0.56 ms)                                             |
+| User Property (vuln) | PSK  | Multi-vector injection, no protection | **+18 MB** uncontrolled growth (6 MB → 24 MB over 20 iters)                |
+| User Property (prot) | PSK  | Proxy blocks all 5 violation types    | **92.6% memory reduction**, 849 pkts blocked (57.4%), budget rule dominant |
+| AUTH Flood (vuln)    | PSK  | DoS via AUTH flooding                 | ~1.49M AUTH packets, 73% CPU                                               |
+| AUTH Flood (prot)    | PSK  | Proxy neutralises attack              | 99.7% conn reduction, 100% AUTH blocked, 0% CPU                            |
 
 ---
 

@@ -61,13 +61,13 @@ Implemented **broker-side validation** using a security proxy that inspects ever
 
 **Attack Vectors (one per proxy rule):**
 
-| Vector | Violation | Payload size | Rule triggered |
-|--------|-----------|--------------|----------------|
-| VT-1 | 25–40 properties × 2 KB values, `retain=True` | ~60 KB/packet | Rule 1: max count |
-| VT-2 | Key length 300–600 bytes | tiny | Rule 2: key size |
-| VT-3 | Single value 5–10 KB, `retain=True` | ~7 KB/packet | Rule 3: value size |
-| VT-4 | 10 props × key≈220B + val≈230B = ~4500B total, `retain=True` | ~4.5 KB/packet | Rule 4: packet payload |
-| VT-5 | 7–8 props × (82B key + 102B val) ≈ 1260 B, `retain=True`, 30–50/iter | ~1.3 KB/packet | Rule 5: cumulative budget |
+| Vector | Violation                                                            | Payload size   | Rule triggered            |
+| ------ | -------------------------------------------------------------------- | -------------- | ------------------------- |
+| VT-1   | 25–40 properties × 2 KB values, `retain=True`                        | ~60 KB/packet  | Rule 1: max count         |
+| VT-2   | Key length 300–600 bytes                                             | tiny           | Rule 2: key size          |
+| VT-3   | Single value 5–10 KB, `retain=True`                                  | ~7 KB/packet   | Rule 3: value size        |
+| VT-4   | 10 props × key≈220B + val≈230B = ~4500B total, `retain=True`         | ~4.5 KB/packet | Rule 4: packet payload    |
+| VT-5   | 7–8 props × (82B key + 102B val) ≈ 1260 B, `retain=True`, 30–50/iter | ~1.3 KB/packet | Rule 5: cumulative budget |
 
 All attack packets use unique per-iteration/per-packet topics so `retain=True` messages accumulate; the unprotected broker grows **~16 MB** over 20 iterations. VT-5 is calibrated so the 32 KB per-client budget is always exhausted (~26 packets pass, remainder dropped).
 
@@ -307,19 +307,19 @@ Each experiment produces CSV files with specific fields. Below is a comprehensiv
 
 ### 11. User Property Attack — Vulnerable — `experiments/user_property_attack/results_vulnerable.csv`
 
-| Column         | Type  | Description                                                       | How Collected                               | Expected Range |
-| -------------- | ----- | ----------------------------------------------------------------- | ------------------------------------------- | -------------- |
-| `iteration`    | int   | Attack iteration number                                           | Sequential (1–20)                           | 1–20           |
-| `normal_sent`  | int   | Normal PUBLISH packets (1–5 small properties each)                | `attack_client.py` stdout field 1           | 3–10           |
-| `vt1_sent`     | int   | VT-1 packets sent (count overflow: 25–40 props × 2 KB values, retain=True)   | `attack_client.py` stdout field 2           | 5–15           |
-| `vt2_sent`     | int   | VT-2 packets sent (key overflow: key 300–600 bytes)                           | `attack_client.py` stdout field 3           | 2–10           |
-| `vt3_sent`     | int   | VT-3 packets sent (value overflow: 5–10 KB per value, retain=True)            | `attack_client.py` stdout field 4           | 2–10           |
-| `vt4_sent`     | int   | VT-4 packets sent (payload overflow: 10 props × key≈220B + val≈230B)          | `attack_client.py` stdout field 5           | 3–8            |
-| `vt5_sent`     | int   | VT-5 packets sent (budget drain: 30–50 × ~1260B per pkt, retain=True)         | `attack_client.py` stdout field 6           | 30–50          |
-| `total_sent`   | int   | Sum of all six packet-count fields                                | `run.sh` arithmetic sum                     | 40–100         |
-| `cpu_before`   | float | Broker CPU (%) before the iteration                               | `ps %cpu=`                                  | 0.0–0.4%       |
-| `cpu_after`    | float | Broker CPU (%) after the iteration                                | `ps %cpu=`                                  | 0.0–0.4%       |
-| `mem_kb`       | int   | Broker RSS (KB) after the iteration                               | `ps rss=`                                   | grows          |
+| Column        | Type  | Description                                                                | How Collected                     | Expected Range |
+| ------------- | ----- | -------------------------------------------------------------------------- | --------------------------------- | -------------- |
+| `iteration`   | int   | Attack iteration number                                                    | Sequential (1–20)                 | 1–20           |
+| `normal_sent` | int   | Normal PUBLISH packets (1–5 small properties each)                         | `attack_client.py` stdout field 1 | 3–10           |
+| `vt1_sent`    | int   | VT-1 packets sent (count overflow: 25–40 props × 2 KB values, retain=True) | `attack_client.py` stdout field 2 | 5–15           |
+| `vt2_sent`    | int   | VT-2 packets sent (key overflow: key 300–600 bytes)                        | `attack_client.py` stdout field 3 | 2–10           |
+| `vt3_sent`    | int   | VT-3 packets sent (value overflow: 5–10 KB per value, retain=True)         | `attack_client.py` stdout field 4 | 2–10           |
+| `vt4_sent`    | int   | VT-4 packets sent (payload overflow: 10 props × key≈220B + val≈230B)       | `attack_client.py` stdout field 5 | 3–8            |
+| `vt5_sent`    | int   | VT-5 packets sent (budget drain: 30–50 × ~1260B per pkt, retain=True)      | `attack_client.py` stdout field 6 | 30–50          |
+| `total_sent`  | int   | Sum of all six packet-count fields                                         | `run.sh` arithmetic sum           | 40–100         |
+| `cpu_before`  | float | Broker CPU (%) before the iteration                                        | `ps %cpu=`                        | 0.0–0.4%       |
+| `cpu_after`   | float | Broker CPU (%) after the iteration                                         | `ps %cpu=`                        | 0.0–0.4%       |
+| `mem_kb`      | int   | Broker RSS (KB) after the iteration                                        | `ps rss=`                         | grows          |
 
 **What it shows:** Memory impact when all 5 attack vector types reach the broker with no filtering. VT-1 packets (~60 KB each retained) drive the bulk of growth. Packet counts vary per iteration.
 
@@ -335,19 +335,19 @@ Each experiment produces CSV files with specific fields. Below is a comprehensiv
 
 ### 12. User Property Attack — Protected — `experiments/user_property_attack/results_protected.csv`
 
-| Column              | Type  | Description                                                | How Collected                                                          | Expected Range |
-| ------------------- | ----- | ---------------------------------------------------------- | ---------------------------------------------------------------------- | -------------- |
-| `iteration`         | int   | Attack iteration number                                    | Sequential (1–20)                                                      | 1–20           |
-| `packets_forwarded` | int   | Packets that passed all 5 proxy rules → forwarded to broker | Proxy stats (`packets_forwarded`), read via SIGUSR1 JSON dump         | 28–36          |
-| `packets_dropped`   | int   | Total packets blocked by any proxy rule                    | Proxy stats (`packets_dropped`), SIGUSR1 JSON dump                    | 26–63          |
-| `prop_count_drops`  | int   | Drops triggered by Rule 1 (property count > 10)            | Proxy stats (`prop_count_drops`), SIGUSR1 JSON dump                   | varies         |
-| `key_size_drops`    | int   | Drops triggered by Rule 2 (key > 256 bytes)                | Proxy stats (`key_size_drops`), SIGUSR1 JSON dump                     | varies         |
-| `val_size_drops`    | int   | Drops triggered by Rule 3 (value > 256 bytes)              | Proxy stats (`val_size_drops`), SIGUSR1 JSON dump                     | varies         |
-| `payload_drops`     | int   | Drops triggered by Rule 4 (per-packet payload > 4096 bytes)| Proxy stats (`payload_drops`), SIGUSR1 JSON dump                      | varies         |
-| `budget_drops`      | int   | Drops triggered by Rule 5 (cumulative budget > 32 KB)      | Proxy stats (`budget_drops`), SIGUSR1 JSON dump                       | 6–26           |
-| `cpu_before`        | float | Broker CPU (%) before the iteration                        | `ps %cpu=`                                                             | 0.0%           |
-| `cpu_after`         | float | Broker CPU (%) after the iteration                         | `ps %cpu=`                                                             | 0.0%           |
-| `mem_kb`            | int   | Broker RSS (KB) after the iteration                        | `ps rss=`                                                              | 3,000–4,300 KB |
+| Column              | Type  | Description                                                 | How Collected                                                 | Expected Range |
+| ------------------- | ----- | ----------------------------------------------------------- | ------------------------------------------------------------- | -------------- |
+| `iteration`         | int   | Attack iteration number                                     | Sequential (1–20)                                             | 1–20           |
+| `packets_forwarded` | int   | Packets that passed all 5 proxy rules → forwarded to broker | Proxy stats (`packets_forwarded`), read via SIGUSR1 JSON dump | 28–36          |
+| `packets_dropped`   | int   | Total packets blocked by any proxy rule                     | Proxy stats (`packets_dropped`), SIGUSR1 JSON dump            | 26–63          |
+| `prop_count_drops`  | int   | Drops triggered by Rule 1 (property count > 10)             | Proxy stats (`prop_count_drops`), SIGUSR1 JSON dump           | varies         |
+| `key_size_drops`    | int   | Drops triggered by Rule 2 (key > 256 bytes)                 | Proxy stats (`key_size_drops`), SIGUSR1 JSON dump             | varies         |
+| `val_size_drops`    | int   | Drops triggered by Rule 3 (value > 256 bytes)               | Proxy stats (`val_size_drops`), SIGUSR1 JSON dump             | varies         |
+| `payload_drops`     | int   | Drops triggered by Rule 4 (per-packet payload > 4096 bytes) | Proxy stats (`payload_drops`), SIGUSR1 JSON dump              | varies         |
+| `budget_drops`      | int   | Drops triggered by Rule 5 (cumulative budget > 32 KB)       | Proxy stats (`budget_drops`), SIGUSR1 JSON dump               | 6–26           |
+| `cpu_before`        | float | Broker CPU (%) before the iteration                         | `ps %cpu=`                                                    | 0.0%           |
+| `cpu_after`         | float | Broker CPU (%) after the iteration                          | `ps %cpu=`                                                    | 0.0%           |
+| `mem_kb`            | int   | Broker RSS (KB) after the iteration                         | `ps rss=`                                                     | 3,000–4,300 KB |
 
 **What it shows:** Same multi-vector attack through the proxy. All 5 drop-type columns are non-zero in virtually every iteration; `budget_drops` is consistently the largest category because VT-5 sends 30–50 packets but the 32 KB budget exhausts after ~26, causing 4–24 drops per iteration per iteration.
 
