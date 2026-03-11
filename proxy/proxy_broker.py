@@ -286,14 +286,30 @@ class ProxyStats:
             self.connections_accepted = 0
             self.connections_rejected = 0
             self.auth_packets_blocked = 0
+            # Per-category property violation counters
+            self.prop_count_drops  = 0   # VT-1: too many properties
+            self.key_size_drops    = 0   # VT-2: key exceeds 256 bytes
+            self.val_size_drops    = 0   # VT-3: value exceeds 256 bytes
+            self.payload_drops     = 0   # VT-4: total payload exceeds 4096 bytes
+            self.budget_drops      = 0   # VT-5: cumulative client budget exceeded
 
     def forward(self):
         with self._lock:
             self.packets_forwarded += 1
 
-    def drop(self):
+    def drop(self, reason='drop'):
         with self._lock:
             self.packets_dropped += 1
+            if reason == 'drop_count':
+                self.prop_count_drops += 1
+            elif reason == 'drop_keysize':
+                self.key_size_drops += 1
+            elif reason == 'drop_valsize':
+                self.val_size_drops += 1
+            elif reason == 'drop_payload':
+                self.payload_drops += 1
+            elif reason == 'drop_budget':
+                self.budget_drops += 1
 
     def accept_conn(self):
         with self._lock:
@@ -315,6 +331,11 @@ class ProxyStats:
                 'connections_accepted':  self.connections_accepted,
                 'connections_rejected':  self.connections_rejected,
                 'auth_packets_blocked':  self.auth_packets_blocked,
+                'prop_count_drops':     self.prop_count_drops,
+                'key_size_drops':       self.key_size_drops,
+                'val_size_drops':       self.val_size_drops,
+                'payload_drops':        self.payload_drops,
+                'budget_drops':         self.budget_drops,
             }
 
     def dump_and_reset(self):
@@ -367,11 +388,14 @@ class UserPropertyRules:
     Validates PUBLISH packets against user-property size limits.
 
     Rules enforced:
-      1. Max 10 user properties per packet
-      2. Max 256 bytes per property key
-      3. Max 256 bytes per property value
-      4. Max 4096 bytes total property payload per packet
-      5. Per-client cumulative budget of 32 KB
+      1. Max 10 user properties per packet         → 'drop_count'
+      2. Max 256 bytes per property key             → 'drop_keysize'
+      3. Max 256 bytes per property value           → 'drop_valsize'
+      4. Max 4096 bytes total property payload      → 'drop_payload'
+      5. Per-client cumulative budget of 32 KB      → 'drop_budget'
+
+    Each rule returns a specific drop code so callers can track
+    which violation triggered the rejection.
     """
     MAX_PROPERTIES      = 10
     MAX_KEY_SIZE        = 256
@@ -384,7 +408,14 @@ class UserPropertyRules:
         self._lock = threading.Lock()
 
     def inspect(self, packet, client_id="default"):
-        """Return 'forward' or 'drop'."""
+        """
+        Return 'forward' or a specific drop code:
+          'drop_count'   – property count exceeded MAX_PROPERTIES
+          'drop_keysize' – a property key exceeds MAX_KEY_SIZE
+          'drop_valsize' – a property value exceeds MAX_VALUE_SIZE
+          'drop_payload' – per-packet total payload exceeds MAX_TOTAL_PAYLOAD
+          'drop_budget'  – cumulative client payload exceeds MAX_CLIENT_BUDGET
+        """
         if get_packet_type(packet) != PUBLISH:
             return 'forward'
 
@@ -392,25 +423,28 @@ class UserPropertyRules:
 
         # Rule 1 – property count
         if len(props) > self.MAX_PROPERTIES:
-            return 'drop'
+            return 'drop_count'
 
         total_payload = 0
         for key, val in props:
             kb = len(key.encode('utf-8'))
             vb = len(val.encode('utf-8'))
-            # Rule 2/3 – key / value sizes
-            if kb > self.MAX_KEY_SIZE or vb > self.MAX_VALUE_SIZE:
-                return 'drop'
+            # Rule 2 – key size
+            if kb > self.MAX_KEY_SIZE:
+                return 'drop_keysize'
+            # Rule 3 – value size
+            if vb > self.MAX_VALUE_SIZE:
+                return 'drop_valsize'
             total_payload += kb + vb
 
-        # Rule 4 – per-packet payload
+        # Rule 4 – per-packet payload budget
         if total_payload > self.MAX_TOTAL_PAYLOAD:
-            return 'drop'
+            return 'drop_payload'
 
         # Rule 5 – per-client cumulative budget
         with self._lock:
             if self._budgets[client_id] + total_payload > self.MAX_CLIENT_BUDGET:
-                return 'drop'
+                return 'drop_budget'
             self._budgets[client_id] += total_payload
 
         return 'forward'
@@ -511,9 +545,10 @@ class ClientHandler(threading.Thread):
                 ptype = get_packet_type(pkt)
                 if ptype == AUTH:
                     self.stats.block_auth()
-                self.stats.drop()
+                self.stats.drop(action)   # pass specific violation code
                 log.debug(
-                    f"DROPPED {PTYPE_NAMES.get(ptype, '?')} from {self.client_id}"
+                    f"DROPPED {PTYPE_NAMES.get(ptype, '?')} from {self.client_id} "
+                    f"reason={action}"
                 )
         self._stop.set()
 

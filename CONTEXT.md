@@ -187,10 +187,20 @@ The proxy supports three modes via `--mode`:
 The proxy tracks per-interval statistics via `ProxyStats`:
 
 - `packets_forwarded` — MQTT packets that passed inspection and were forwarded to Mosquitto
-- `packets_dropped` — MQTT packets blocked by validation rules
+- `packets_dropped` — MQTT packets blocked by any validation rule (total)
 - `connections_accepted` — TLS connections accepted by the proxy
 - `connections_rejected` — TLS connections rejected by the rate limiter
 - `auth_packets_blocked` — AUTH packets intercepted and dropped
+
+**Per-violation-type packet drop counters (User Property mode):**
+
+- `prop_count_drops` — Packets dropped by Rule 1 (property count > 10)
+- `key_size_drops` — Packets dropped by Rule 2 (key exceeds 256 bytes)
+- `val_size_drops` — Packets dropped by Rule 3 (value exceeds 256 bytes)
+- `payload_drops` — Packets dropped by Rule 4 (per-packet total payload > 4096 bytes)
+- `budget_drops` — Packets dropped by Rule 5 (cumulative per-client budget > 32 KB)
+
+Invariant: `packets_dropped == prop_count_drops + key_size_drops + val_size_drops + payload_drops + budget_drops` in user_property mode.
 
 Stats are dumped to a JSON file on SIGUSR1 signal, then counters reset. This allows `run.sh` scripts to read per-iteration proxy metrics.
 
@@ -353,30 +363,46 @@ PSK context setup IS faster (0.194 vs 0.341 ms) and uses less memory (~444 KB le
 
 ### 7.10 User Property Attack — `experiments/user_property_attack/`
 
-**Purpose:** Demonstrate User Property memory exhaustion (CWE-770) and broker-side proxy mitigation.
+**Purpose:** Demonstrate User Property memory exhaustion (CWE-770) and broker-side proxy mitigation using a **multi-vector attack** that exercises all 5 proxy rules independently.
 
-**Attack:** `attack_client.py` sends 30 PUBLISH messages per iteration with 50 user properties × 1KB values each, `retain=True`. Plus 5 normal messages (2 properties × ~11B).
+**Attack Vectors (packet counts randomised each iteration):**
 
-| Metric                  | Vulnerable (no proxy) | Protected (proxy)        |
-| ----------------------- | --------------------- | ------------------------ |
-| Packets reaching broker | 35/iter (all)         | 7/iter (normal only)     |
-| Packets dropped         | 0                     | 30/iter (attack blocked) |
-| Memory start            | 6,084 KB              | 2,960 KB                 |
-| Memory end              | 41,268 KB             | 3,164 KB                 |
-| Memory growth           | +35,184 KB            | +204 KB                  |
-| Reduction               | —                     | **99.6%**                |
+| Vector | Violation | Payload/packet | Rule triggered | Count range |
+|--------|-----------|----------------|----------------|-------------|
+| Normal | 1–5 legitimate properties | ~50 B | — (always forwarded) | 3–10/iter |
+| VT-1 | 25–40 props × 2 KB values, retain=True, unique topic | ~62 KB | Rule 1: property count | 5–15/iter |
+| VT-2 | Key length 300–600 bytes | tiny | Rule 2: key size | 2–10/iter |
+| VT-3 | Single value 5–10 KB, retain=True, unique topic | ~7.5 KB | Rule 3: value size | 2–10/iter |
+| VT-4 | 10 props × (key≈220B + val≈230B) = ~4500B total, retain=True | ~4.5 KB | Rule 4: packet payload | 3–8/iter |
+| VT-5 | 7–8 props × (82B key + 102B val) ≈ 1260B, retain=True | ~1.3 KB | Rule 5: cumulative budget | 30–50/iter |
+
+VT-1/VT-3/VT-4 use `retain=True` + unique per-iteration/per-packet topics so retained messages accumulate in the unprotected broker. VT-5 is calibrated so the 32 KB per-client budget exhausts after ~26 packets — ensuring `budget_drops` fires every iteration.
+
+| Metric                  | Vulnerable (no proxy)                    | Protected (proxy)                            |
+| ----------------------- | ---------------------------------------- | -------------------------------------------- |
+| Total packets sent      | ~70/iter (varies), 1,398 over 20 iters   | 629 forwarded over 20 iters (28–36/iter)     |
+| Packets dropped         | 0                                        | 849 blocked (57.4% block rate)               |
+| Rule 1 drops            | n/a                                      | 186 (count overflow)                         |
+| Rule 2 drops            | n/a                                      | 119 (key size)                               |
+| Rule 3 drops            | n/a                                      | 121 (value size)                             |
+| Rule 4 drops            | n/a                                      | 98 (payload total)                           |
+| Rule 5 drops            | n/a                                      | **325** (budget exhaustion — dominant)       |
+| Memory growth (20 iter) | **+18,140 KB (+18 MB)** 6,020→24,160 KB | +1,276 KB (+1.3 MB) 2,936→4,212 KB          |
+| Memory reduction        | —                                        | **92.6%**                                    |
 
 **How it works:**
 
-- Vulnerable: `attack_client.py → Mosquitto:8883` (direct, PSK config)
+- Vulnerable: `attack_client.py → Mosquitto:8883` (direct, PSK config) — all retained packets accumulate
 - Protected: `attack_client.py → proxy_broker.py:8883 → Mosquitto:1884` (proxy validates)
-- Proxy catches attack packets at the first check (50 properties > 10 limit) and drops them
-- `run.sh` resets proxy stats with SIGUSR1 before each iteration, reads JSON stats after
+- `UserPropertyRules.inspect()` returns a specific drop code per rule (`'drop_count'`, `'drop_keysize'`, `'drop_valsize'`, `'drop_payload'`, `'drop_budget'`)
+- `ProxyStats.drop(reason)` routes to the corresponding per-type counter
+- `run.sh` passes `--iteration $i` to attack_client so each iteration’s retain topics are globally unique (no overwrite across iterations)
+- VT-5 budget exhaustion: budget = 32,768 B, each packet ≈ 1,260 B → exhausted at packet 26; the remaining 4–24 VT-5 packets per iteration are dropped as `budget_drops`
 
 **CSV schemas:**
 
-- `results_vulnerable.csv`: `iteration,packets_sent,packets_rejected,cpu_before,cpu_after,mem_kb`
-- `results_protected.csv`: `iteration,packets_forwarded,packets_dropped,cpu_before,cpu_after,mem_kb`
+- `results_vulnerable.csv`: `iteration,normal_sent,vt1_sent,vt2_sent,vt3_sent,vt4_sent,vt5_sent,total_sent,cpu_before,cpu_after,mem_kb`
+- `results_protected.csv`: `iteration,packets_forwarded,packets_dropped,prop_count_drops,key_size_drops,val_size_drops,payload_drops,budget_drops,cpu_before,cpu_after,mem_kb`
 
 ---
 
@@ -572,8 +598,8 @@ CONNS_REJECTED=$(python3 -c "import json; d=json.load(open('$STATS_FILE')); prin
 | `psk_optimized/results.csv`                      | `method,iteration,handshake_ms,mem_kb`                                                                                                                  |
 | `session_resumption/results_new_handshake.csv`   | `iteration,handshake_ms,cpu_before,cpu_after,mem_kb`                                                                                                    |
 | `session_resumption/results_session_resumed.csv` | `iteration,handshake_ms,cpu_before,cpu_after,mem_kb`                                                                                                    |
-| `user_property_attack/results_vulnerable.csv`    | `iteration,packets_sent,packets_rejected,cpu_before,cpu_after,mem_kb`                                                                                   |
-| `user_property_attack/results_protected.csv`     | `iteration,packets_forwarded,packets_dropped,cpu_before,cpu_after,mem_kb`                                                                               |
+| `user_property_attack/results_vulnerable.csv`    | `iteration,normal_sent,vt1_sent,vt2_sent,vt3_sent,vt4_sent,vt5_sent,total_sent,cpu_before,cpu_after,mem_kb`                                             |
+| `user_property_attack/results_protected.csv`     | `iteration,packets_forwarded,packets_dropped,prop_count_drops,key_size_drops,val_size_drops,payload_drops,budget_drops,cpu_before,cpu_after,mem_kb`      |
 | `auth_flood/results_vulnerable.csv`              | `iteration,flood_conns,flood_attempts,auth_packets_sent,legit_latency_ms,legit_success,cpu_before,cpu_after,mem_kb`                                     |
 | `auth_flood/results_protected.csv`               | `iteration,flood_conns,flood_attempts,auth_packets_sent,auth_packets_blocked,conns_rejected,legit_latency_ms,legit_success,cpu_before,cpu_after,mem_kb` |
 
@@ -592,8 +618,8 @@ CONNS_REJECTED=$(python3 -c "import json; d=json.load(open('$STATS_FILE')); prin
 | Phase 2              | PSK  | Python PSK callback adds overhead | **4.79 ms** (2.5× slower)                       |
 | PSK Optimized        | PSK  | Resumed PSK beats cert            | **0.89 ms** (62% faster than cert)              |
 | Session Resumption   | PSK  | Massive reconnection speedup      | **89.5% faster** (5.3→0.56 ms)                  |
-| User Property (vuln) | PSK  | Memory exhaustion attack          | **+35 MB** uncontrolled growth                  |
-| User Property (prot) | PSK  | Proxy blocks 100% of attack       | **+0.2 MB** growth, 99.6% reduction             |
+| User Property (vuln) | PSK  | Multi-vector injection, no protection  | **+18 MB** uncontrolled growth (6 MB → 24 MB over 20 iters)  |
+| User Property (prot) | PSK  | Proxy blocks all 5 violation types     | **92.6% memory reduction**, 849 pkts blocked (57.4%), budget rule dominant |
 | AUTH Flood (vuln)    | PSK  | DoS via AUTH flooding             | ~1.49M AUTH packets, 73% CPU                    |
 | AUTH Flood (prot)    | PSK  | Proxy neutralises attack          | 99.7% conn reduction, 100% AUTH blocked, 0% CPU |
 
